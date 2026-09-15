@@ -27,6 +27,6 @@
 |---|---|---|
 | E1 CLOSING_REFERENCE | 已实现（草案）：午休与收盘后使用阶段边界后 10 分钟内的冻结快照，或最后一个连续交易快照；按最新价/收盘价口径；机会提醒关闭 | `apps/relative_snapshot.py::is_reference_snapshot`，`tests/unit/test_relative_snapshot_replay.py` |
 | E2 组级输出 | 已实现：`GroupResult`（成员 S、排名、退出原因 + 成对 R/δ/边界/状态），与单基金绝对估值分离 | `core/relative.py` |
-| E3 X₀ 关键路径 | PH0-07 历史拟合：五只基金一致为 L0_FX_T，且净值日期完全对齐，共同锚点下 X₀ 约掉；文件确认（PH0-06）待做 | `reports/phase0/history/…/findings.md` |
+| E3 X₀ 关键路径 | 已关闭：PH0-07 历史拟合 + PH0-06 招募说明书条款一致（估值日当日中间价），规则 VERIFIED；共同锚点下 X₀ 约掉 | `reports/phase0/history/…/findings.md`、`reports/phase0/fund_rules/…/findings.md`、`data/fund_rules/` |
 | E6 费用不触发退出 | 已按此实现：只有来源事件字段或增长率断点才判 NONSEPARABLE_EVENT | `core/history_validation.py`、`apps/relative_snapshot.py::_latest_nav` |
 | E7 年龄参照 cutoff | 相对比较按知识截止时刻计算年龄 | `core/relative.py` |

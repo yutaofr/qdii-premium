@@ -1,0 +1,30 @@
+# PH0-06 基金规则证据：513390（仅短摘录；PDF 原件保存在仓库外 ~/qdii-data/evidence/ph0-06/513390/）
+
+code = "513390"
+exchange = "SSE"
+
+[document]
+title = "博时纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书"
+announcement_id = "AN202511161782507489"
+publish_date = "2025-11-17"
+url = "https://pdf.dfcfw.com/pdf/H2_AN202511161782507489_1.pdf"
+sha256 = "7537ceddeb8b0ef70c1079b4a4fe6c2eb96d4dc33f0284a28992a08b0c7aa6f8"
+pages = 177
+received_utc = "2026-09-15T08:41:18+00:00"
+
+[clauses.valuation_day]
+page = 81
+excerpt = "本基金的估值日为本基金相关的证券、期货交易场所的交易日以及国家法律法规规定需要对外披露基金净值的非交易日"
+
+[clauses.valuation_fx]
+page = 83
+excerpt = "本基金外币资产价值计算中，涉及主要货币对人民币汇率的，应使用基金估值日中国人民银行或其授权机构公布的人民币汇率中间价或其他基金管理人与托管人协商一致的第三方数据服务商提供的汇率"
+
+[nav_fx_rule]
+rule = "L0_FX_T"
+interpretation = "净值日 d 的单位净值：股票取不晚于 d 的最近美股收盘，美元兑人民币取中国日期 d 当日公布的中间价"
+status = "VERIFIED"
+verified_at = "2026-09-15"
+verified_by = "architect review (Claude) of prospectus clause + PH0-07 empirical fit"
+evidence = ["reports/phase0/fund_rules/20260915T084057Z/extract_513390.json", "reports/phase0/history/RESEARCH-20260915T072333Z/findings.md"]
+caveats = ["条款含备选“协商一致的第三方数据服务商汇率”：实证支持当前使用中间价，但规则可在不修改合同的情况下切换，须监控公告与 PH0-07 残差漂移", "管理人与托管人协商一致后可调整估值汇率并报证监会备案：须监控公告"]

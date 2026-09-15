@@ -1,0 +1,110 @@
+{
+ "run": "RESEARCH-RULES-20260915T084057Z",
+ "funds": {
+  "513100": {
+   "document": {
+    "code": "513100",
+    "announcement_id": "AN202609141829377964",
+    "title": "纳斯达克100交易型开放式指数证券投资基金更新招募说明书(2026年第一号)",
+    "publish_date": "2026-09-15",
+    "url": "https://pdf.dfcfw.com/pdf/H2_AN202609141829377964_1.pdf",
+    "sha256": "d2bcc6389dec8400b29bd3245c2cbe6a393b60c620cbe97f036767c7a938b507",
+    "bytes": 1332403,
+    "pages": 127,
+    "received_utc": "2026-09-15T08:40:59+00:00"
+   },
+   "excerpt_counts": {
+    "PCF_CASH_SUBSTITUTE": 47,
+    "IOPV": 3,
+    "FX_OTHER": 7,
+    "BENCHMARK": 4,
+    "DAY_DEFINITION": 3,
+    "VALUATION_FX": 3
+   }
+  },
+  "159696": {
+   "document": {
+    "code": "159696",
+    "announcement_id": "AN202602271820108089",
+    "title": "易方达纳斯达克100交易型开放式指数证券投资基金(QDII)更新的招募说明书",
+    "publish_date": "2026-02-28",
+    "url": "https://pdf.dfcfw.com/pdf/H2_AN202602271820108089_1.pdf",
+    "sha256": "614f476162d00b5637a2be7b88f18a53a61e24620558775c3405c994657f280b",
+    "bytes": 1106375,
+    "pages": 130,
+    "received_utc": "2026-09-15T08:41:03+00:00"
+   },
+   "excerpt_counts": {
+    "PCF_CASH_SUBSTITUTE": 57,
+    "FX_OTHER": 9,
+    "DAY_DEFINITION": 4,
+    "IOPV": 7,
+    "BENCHMARK": 5,
+    "VALUATION_FX": 2
+   }
+  },
+  "159501": {
+   "document": {
+    "code": "159501",
+    "announcement_id": "AN202604291821765398",
+    "title": "嘉实纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年04月30日更新)",
+    "publish_date": "2026-04-30",
+    "url": "https://pdf.dfcfw.com/pdf/H2_AN202604291821765398_1.pdf",
+    "sha256": "c4a04d4ab7b4f4de801a27ed4e7dbfab357ece728d55b2538288d407f005a82d",
+    "bytes": 963393,
+    "pages": 151,
+    "received_utc": "2026-09-15T08:41:08+00:00"
+   },
+   "excerpt_counts": {
+    "FX_OTHER": 9,
+    "PCF_CASH_SUBSTITUTE": 50,
+    "DAY_DEFINITION": 5,
+    "IOPV": 9,
+    "BENCHMARK": 4,
+    "VALUATION_FX": 3
+   }
+  },
+  "159660": {
+   "document": {
+    "code": "159660",
+    "announcement_id": "AN202608161828029885",
+    "title": "汇添富纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年8月17日更新)",
+    "publish_date": "2026-08-17",
+    "url": "https://pdf.dfcfw.com/pdf/H2_AN202608161828029885_1.pdf",
+    "sha256": "75d50a4b765eb47997f3152b06d69a8acbdc9ad489f0e46f4b7193c3055be7a3",
+    "bytes": 2071683,
+    "pages": 157,
+    "received_utc": "2026-09-15T08:41:14+00:00"
+   },
+   "excerpt_counts": {
+    "FX_OTHER": 13,
+    "DAY_DEFINITION": 4,
+    "PCF_CASH_SUBSTITUTE": 47,
+    "IOPV": 7,
+    "BENCHMARK": 3,
+    "VALUATION_FX": 2
+   }
+  },
+  "513390": {
+   "document": {
+    "code": "513390",
+    "announcement_id": "AN202511161782507489",
+    "title": "博时纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书",
+    "publish_date": "2025-11-17",
+    "url": "https://pdf.dfcfw.com/pdf/H2_AN202511161782507489_1.pdf",
+    "sha256": "7537ceddeb8b0ef70c1079b4a4fe6c2eb96d4dc33f0284a28992a08b0c7aa6f8",
+    "bytes": 1083242,
+    "pages": 177,
+    "received_utc": "2026-09-15T08:41:18+00:00"
+   },
+   "excerpt_counts": {
+    "PCF_CASH_SUBSTITUTE": 53,
+    "FX_OTHER": 15,
+    "IOPV": 7,
+    "DAY_DEFINITION": 3,
+    "BENCHMARK": 8,
+    "VALUATION_FX": 2
+   }
+  }
+ }
+}

@@ -1,0 +1,30 @@
+# PH0-06 基金规则证据：513100（仅短摘录；PDF 原件保存在仓库外 ~/qdii-data/evidence/ph0-06/513100/）
+
+code = "513100"
+exchange = "SSE"
+
+[document]
+title = "纳斯达克100交易型开放式指数证券投资基金更新招募说明书(2026年第一号)"
+announcement_id = "AN202609141829377964"
+publish_date = "2026-09-15"
+url = "https://pdf.dfcfw.com/pdf/H2_AN202609141829377964_1.pdf"
+sha256 = "d2bcc6389dec8400b29bd3245c2cbe6a393b60c620cbe97f036767c7a938b507"
+pages = 127
+received_utc = "2026-09-15T08:40:59+00:00"
+
+[clauses.valuation_day]
+page = 54
+excerpt = "本基金的估值日为本基金相关的证券交易场所共同的正常交易日以及国家法律法规规定需要对外披露基金净值的非开放日"
+
+[clauses.valuation_fx]
+page = 55
+excerpt = "人民币对美元的汇率应当以基金估值日中国人民银行或其授权机构公布的人民币汇率为准"
+
+[nav_fx_rule]
+rule = "L0_FX_T"
+interpretation = "净值日 d 的单位净值：股票取不晚于 d 的最近美股收盘，美元兑人民币取中国日期 d 当日公布的中间价"
+status = "VERIFIED"
+verified_at = "2026-09-15"
+verified_by = "architect review (Claude) of prospectus clause + PH0-07 empirical fit"
+evidence = ["reports/phase0/fund_rules/20260915T084057Z/extract_513100.json", "reports/phase0/history/RESEARCH-20260915T072333Z/findings.md"]
+caveats = ["条款写“人民币汇率”，未出现“中间价”字样；按 PH0-07 实证（L0_FX_T 封存 MAE 0.6bp）解读为估值日人民币汇率中间价", "估值日定义为相关交易场所共同交易日，但实测美股休市日（如 2025-01-09）照常披露净值，属“需要对外披露基金净值的非开放日”"]

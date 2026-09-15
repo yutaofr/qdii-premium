@@ -148,6 +148,10 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--until", default=None, type=date.fromisoformat)
     f.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     f.set_defaults(func=cmd_research_fetch)
+    fr = rs.add_parser("fund-rules", help="PH0-06：下载最新招募说明书（仓库外）并提取估值汇率条款候选句")
+    fr.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    fr.add_argument("--out", default="reports/phase0/fund_rules")
+    fr.set_defaults(func=cmd_research_fund_rules)
     a = rs.add_parser("nav-fx", help="PH0-07：净值日期对齐与汇率规则对照报告")
     a.add_argument("--run", default="latest")
     a.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
@@ -181,6 +185,16 @@ def cmd_research_fetch(args: argparse.Namespace) -> int:
     until = args.until or datetime.now(UTC).date()
     run_id = asyncio.run(fetch_history(Path(args.data_root).expanduser() / "research", args.since, until))
     print(run_id)
+    return 0
+
+
+def cmd_research_fund_rules(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from qdii.apps.research_rules import run
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    print(asyncio.run(run(Path(args.data_root).expanduser(), Path(args.out) / stamp)))
     return 0
 
 

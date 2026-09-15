@@ -33,7 +33,8 @@
 | 项 | 结论 | 报告 |
 |---|---|---|
 | PH0-08 可达性 | R 核心端点从法国可达；新浪需 Referer；东方财富行情走延迟通道 | [reach/findings](reports/phase0/reach/20260914T231217Z/findings.md) |
-| PH0-07 历史验证 | 五只基金均与"净值日美股收盘 + 当日中间价"一致，封存 MAE 0.5—0.7 bp（历史拟合，待 PH0-06 文件确认） | [history/findings](reports/phase0/history/RESEARCH-20260915T072333Z/findings.md) |
+| PH0-07 历史验证 | 五只基金均与"净值日美股收盘 + 当日中间价"一致，封存 MAE 0.5—0.7 bp | [history/findings](reports/phase0/history/RESEARCH-20260915T072333Z/findings.md) |
+| PH0-06 基金文件 | 五只招募说明书估值汇率条款均为"估值日（当日）人民银行中间价"，与 PH0-07 一致 → 规则 VERIFIED；513390 有备选汇率来源条款 | [fund_rules/findings](reports/phase0/fund_rules/20260915T084057Z/findings.md)、`data/fund_rules/` |
 | PH0-08 日历 | XSHG/XNYS 与 412 个净值日、425 个 NDX 收盘日完全一致；无 XSHE（映射 XSHG）；XSHG 仅覆盖到 2026-12-31 | [calendar/findings](reports/phase0/calendar/findings.md) |
 | 事件 | 2026-09-15 合盖睡眠；采集范围改为巴黎 07:30 至 A 股收盘 | [incidents](reports/phase0/incidents/2026-09-15-clamshell-sleep.md) |
 
@@ -58,6 +59,7 @@ uv run qdii relative                                                      # 当�
 uv run qdii relative --at 2026-09-15T14:50:00+08:00 --json                # 回放任意历史时刻
 uv run qdii research fetch-history --since 2025-01-01                     # 历史数据 → ~/qdii-data/research
 uv run qdii research nav-fx                                               # 从原始日志重解析并生成 PH0-07 报告
+uv run --group research qdii research fund-rules                          # PH0-06：招募说明书下载到仓库外并提取条款
 ```
 
 数据目录 `~/qdii-data`：`raw/`（原始日志）、`events/collector.jsonl`、`state/heartbeat.json`、`state/blocked.json`、`logs/`。

@@ -1,0 +1,30 @@
+# PH0-06 基金规则证据：159660（仅短摘录；PDF 原件保存在仓库外 ~/qdii-data/evidence/ph0-06/159660/）
+
+code = "159660"
+exchange = "SZSE"
+
+[document]
+title = "汇添富纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年8月17日更新)"
+announcement_id = "AN202608161828029885"
+publish_date = "2026-08-17"
+url = "https://pdf.dfcfw.com/pdf/H2_AN202608161828029885_1.pdf"
+sha256 = "75d50a4b765eb47997f3152b06d69a8acbdc9ad489f0e46f4b7193c3055be7a3"
+pages = 157
+received_utc = "2026-09-15T08:41:14+00:00"
+
+[clauses.valuation_day]
+page = 83
+excerpt = "本基金的估值日为本基金相关的证券交易场所的交易日以及国家法律法规规定需要对外披露基金净值的非交易日"
+
+[clauses.valuation_fx]
+page = 86
+excerpt = "估值计算中涉及美元、港币、日元、欧元、英镑等五种主要货币对人民币汇率的，将依据下列信息提供机构所提供的汇率为基准：当日中国人民银行公布的人民币与主要货币的中间价"
+
+[nav_fx_rule]
+rule = "L0_FX_T"
+interpretation = "净值日 d 的单位净值：股票取不晚于 d 的最近美股收盘，美元兑人民币取中国日期 d 当日公布的中间价"
+status = "VERIFIED"
+verified_at = "2026-09-15"
+verified_by = "architect review (Claude) of prospectus clause + PH0-07 empirical fit"
+evidence = ["reports/phase0/fund_rules/20260915T084057Z/extract_159660.json", "reports/phase0/history/RESEARCH-20260915T072333Z/findings.md"]
+caveats = []

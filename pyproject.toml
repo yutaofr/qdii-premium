@@ -25,6 +25,9 @@ dev = [
     "import-linter>=2",
     "ruff>=0.6",
 ]
+research = [
+    "pypdf>=5",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
