@@ -22,7 +22,8 @@ C_0914 = int(datetime(2026, 9, 14, 20, 0, tzinfo=ZoneInfo("UTC")).timestamp() * 
 T = bj(14, 49, 55)
 
 BASE = EnavInput(
-    code="A", price=2.2, quote_time_utc_ns=T, nav=2.0, nav_usable=True, index_date=date(2026, 9, 11),
+    code="A", price=2.2, quote_time_utc_ns=T, cutoff_utc_ns=T + 5 * 10**9, current=True, phase_ok=True,
+    calendar_ok=True, nav=2.0, nav_usable=True, index_date=date(2026, 9, 11),
     index_at_anchor=29368.44, fx_at_anchor=6.7743, us_close_date=date(2026, 9, 14), us_close_utc_ns=C_0914,
     index_at_close=29127.16, futures_mid=29058.375, futures_settle=29152.25, futures_time_utc_ns=T - 4 * 10**9,
     fx_spot=6.7136, fx_time_utc_ns=T - 8 * 10**9,
@@ -55,8 +56,13 @@ def test_nav_already_at_last_us_close_has_no_index_move():
     ({"price": None}, ReasonCode.QUOTE_MISSING),
     ({"futures_settle": None}, ReasonCode.FUTURE_ANCHOR_MISSING),
     ({"futures_time_utc_ns": T - 61 * 10**9}, ReasonCode.TIME_SKEW),
-    ({"quote_time_utc_ns": C_0914 + 3600 * 10**9, "futures_time_utc_ns": C_0914 + 3596 * 10**9,
-      "fx_time_utc_ns": C_0914 + 3590 * 10**9}, ReasonCode.FUTURE_ANCHOR_MISSING),  # 收盘后 1 小时：昨结算尚未滚动到 c
+    ({"quote_time_utc_ns": C_0914 + 3600 * 10**9, "cutoff_utc_ns": C_0914 + 3601 * 10**9,
+      "futures_time_utc_ns": C_0914 + 3596 * 10**9, "fx_time_utc_ns": C_0914 + 3590 * 10**9},
+     ReasonCode.FUTURE_ANCHOR_MISSING),  # 收盘后 1 小时：昨结算尚未滚动到 c
+    # 四审 D1：当前估算按知识截止时刻检查时效、阶段与日历
+    ({"cutoff_utc_ns": T + 61 * 10**9}, ReasonCode.TIME_SKEW),
+    ({"calendar_ok": False}, ReasonCode.CALENDAR_UNCERTAIN),
+    ({"phase_ok": False}, ReasonCode.SESSION_BOUNDARY),
     ({"fx_spot": None}, ReasonCode.FX_MISSING),
     ({"fx_time_utc_ns": T - 121 * 10**9}, ReasonCode.FX_STALE),
     ({"futures_settle": 29127.16 * 0.99}, ReasonCode.SETTLEMENT_BASIS_SUSPECT),
@@ -180,4 +186,52 @@ def test_closing_reference_viewed_after_us_close_keeps_the_close_before_the_snap
     st = enav_state()
     b = st.bundle(bj(5, 0, day=16))  # 09-16 凌晨查看：09-15 美股已收盘，但展示的仍是 09-15 14:49:55 的快照
     assert b.mode == "CLOSING_REFERENCE" and b.us_close_date == "2026-09-14"
-    assert {x.status for x in evaluate_bundle(b).enav} == {"PROXY_ANCHOR"}
+    snap = evaluate_bundle(b)
+    assert {x.status for x in snap.enav} == {"REFERENCE"}  # 历史参考，不是当前可用的估算
+    assert view(snap, b, {})["absolute_premium_available"] is False
+
+
+def test_d1_stale_quotes_at_cutoff_make_current_estimate_unavailable():
+    st = enav_state()
+    b = st.bundle(bj(14, 55))  # 14:49:55 之后行情停更
+    snap = evaluate_bundle(b)
+    assert snap.result.status.value == "INELIGIBLE"
+    assert {x.status for x in snap.enav} == {"UNAVAILABLE"}
+    assert all(ReasonCode.TIME_SKEW in x.reasons for x in snap.enav)
+    assert view(snap, b, {})["absolute_premium_available"] is False
+    uncovered = evaluate_bundle(replace(st.bundle(bj(14, 50)), calendar_covered=False))
+    assert all(x.status == "UNAVAILABLE" and ReasonCode.CALENDAR_UNCERTAIN in x.reasons for x in uncovered.enav)
+
+
+def test_d1_estimate_does_not_inherit_relative_group_eligibility():
+    from qdii.apps.relative_snapshot import new_state
+    from tests.unit.test_relative_bundle_state import REPO, etf_msg, nav_msg
+    from tests.unit.test_relative_snapshot_replay import CODES
+
+    st = new_state(REPO)
+    for i, (vendor, nav) in enumerate(CODES.items()):
+        st.ingest(nav_msg(vendor[2:], [{"FSRQ": "2026-09-11", "DWJZ": nav, "LJJZ": nav, "JZZZL": ""}], bj(9, 0, i), i))
+    only = next(iter(CODES))
+    st.ingest(etf_msg("14:49:55", {only: "2.300"}, bj(14, 49, 58), 10))  # 只有一只有行情：相对比较无法成组
+    for msg in factor_msgs([("2026-09-11", "29,368.44"), ("2026-09-14", "29,127.16")], [("2026-09-11", "6.7743")]):
+        st.ingest(msg)
+    st.ingest(hf(bj(14, 49, 50), "29058.25", "29058.50", "29152.25", bj(14, 49, 51), 90))
+    st.ingest(fx(bj(14, 49, 47), "6.7131", "6.7132", bj(14, 49, 49), 91))
+    snap = evaluate_bundle(st.bundle(bj(14, 50)))
+    assert snap.result.status.value == "INELIGIBLE"
+    assert next(x for x in snap.enav if x.code == only[2:]).status == "PROXY_ANCHOR"
+
+
+def test_input_gaps_name_endpoints_that_can_fill_missing_estimate_inputs():
+    from qdii.pipeline.relative_state import input_gaps
+
+    st = fed_state()
+    assert input_gaps(st.bundle(bj(14, 50))) == {"nasdaq.ndx_history"}  # 无指数、无中间价时先缺指数
+    for msg in factor_msgs([("2026-09-11", "29,368.44"), ("2026-09-14", "29,127.16")], [("2026-09-14", "6.7698")]):
+        st.ingest(msg)
+    assert input_gaps(st.bundle(bj(14, 50))) == {"chinamoney.ccpr"}  # 09-11 中间价缺失
+    for msg in factor_msgs([], [("2026-09-11", "6.7743")], seq=80):
+        st.ingest(msg)
+    assert input_gaps(st.bundle(bj(14, 50))) == set()
+    st.navs.pop("513100")
+    assert input_gaps(st.bundle(bj(14, 50))) == {"eastmoney.lsjz.513100"}

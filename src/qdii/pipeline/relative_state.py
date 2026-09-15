@@ -436,3 +436,17 @@ def load_latest_udiff(repo: Path) -> dict | None:
 
     files = sorted((repo / "reports" / "phase0" / "history").glob("RESEARCH-*/pair_udiff.json"))
     return json.loads(files[-1].read_text(encoding="utf-8")) if files else None
+
+
+def input_gaps(bundle: RelativeBundle) -> set[str]:
+    """估算当前缺失、且可以通过重新取数补上的输入对应的端点（四审 D2）。日历不确定等无法靠取数解决的不列入。"""
+    gaps: set[str] = set()
+    if bundle.us_close_date is not None and bundle.us_close_index is None:
+        gaps.add(INDEX_ENDPOINT)
+    for note in bundle.notes:
+        if ":index_close_missing:" in note:
+            gaps.add(INDEX_ENDPOINT)
+        elif ":fixing_missing:" in note:
+            gaps.add(FIXING_ENDPOINT)
+    gaps.update(f"{NAV_ENDPOINT_PREFIX}{m.code}" for m in bundle.members if m.nav is None)
+    return gaps

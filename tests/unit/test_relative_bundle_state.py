@@ -259,7 +259,7 @@ def test_status_page_renders_first_screen():
     })
     assert "相对比较" in page and "513100" in page and "卖一量" in page
     assert "超出情景边界" in page and "日终历史" in page and "报价错位" in page  # 结论与边界分项同时出现（R1）
-    assert "昨结算（代理，尚未验证）" in page and "即使全部都很贵也会有第一名" in page  # 范围与锚点声明
+    assert "结算日与合约月份未经供应商证实" in page and "即使全部都很贵也会有第一名" in page  # 范围与锚点声明
     assert f"/relative/bundle/{rel['bundle_id']}.json" in page and "未写入快照库" in page
 
 

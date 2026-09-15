@@ -1,19 +1,19 @@
 {
   "nature": "REGENERATED_FROM_PRODUCTION_RAW_LOG (not production-written snapshots)",
-  "generated_utc": "2026-09-15T21:25:00+00:00",
+  "generated_utc": "2026-09-15T21:43:34+00:00",
   "target_utc_date": "2026-09-15",
   "evidence_dir": "/Users/weizhang/qdii-data/evidence/mvp/replay-2026-09-15",
   "snapshot_files": {
     "2026-09-15.jsonl": {
       "lines": 1290,
-      "sha256": "fb0a55f0d7a405c420d7c230761fdcf5326955ac2533b9fd02bf81f5a4685935"
+      "sha256": "a7fe3caf356ec2d4323a55b445b5364c5a7bfba6bdae835da0d6912d709dc6c5"
     }
   },
   "triggers": 1290,
   "per_trigger_latency_ms": {
-    "p50": 3.09,
-    "p95": 3.33,
-    "max": 75.922,
+    "p50": 3.077,
+    "p95": 3.338,
+    "max": 74.585,
     "nfr01_limit_ms": 1000
   },
   "verify_bundle": {

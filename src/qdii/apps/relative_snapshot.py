@@ -128,7 +128,7 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
 
 # 勘误 E8：估算溢价已提供，但锚点是未验证的代理，须与相对比较一起如实披露
 ENAV_NOTICE = ("估算溢价 = 价格 / 估算净值 − 1；估算净值用昨晚纳指收盘、纳指期货实时价相对昨结算的涨跌和即期汇率推算，"
-               "期货锚点用的是昨结算（代理，尚未验证），并假设基金满仓跟踪指数。"
+               "期货锚点用的是昨结算（代理，尚未验证，结算日与合约月份未经供应商证实），并假设基金满仓跟踪指数。"
                "相对排名只回答五只中谁更便宜，即使全部都很贵也会有第一名。")
 
 
@@ -170,11 +170,14 @@ def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]
         prem = "—" if r["nav_premium"] is None else f"{r['nav_premium'] * 100:+.2f}%"
         x = r["enav"] or {}
         enav_txt = "—" if x.get("value") is None else f"{x['value']:.4f}"
-        eprem = "—" if x.get("premium") is None else f"{x['premium'] * 100:+.2f}%"
+        eprem = "—" if x.get("premium") is None else (f"{x['premium'] * 100:+.2f}%"
+                                                       + ("" if x["status"] == "PROXY_ANCHOR" else "*"))
         lines.append(f"{(r['rank'] or '—')!s:<4}{r['code']:<8}{r['name']:<20}{r['price'] or '—'!s:>8}"
                      f"{enav_txt:>10}{eprem:>10}{r['nav'] or '—'!s:>10}{r['nav_date'] or '—'!s:>12}{prem:>12}{rel:>12}"
                      + ("" if r["eligible"] else f"  退出：{','.join(r['reasons'])}")
                      + ("" if x.get("value") is not None else f"  估算不可用：{','.join(x.get('reasons', []))}"))
+    if any((r["enav"] or {}).get("status") == "REFERENCE" for r in v["rows"]):
+        lines.append("* 收盘参考估算：基于冻结的收盘/午休快照，不代表当前可交易价格。")
     x0 = next((r["enav"] for r in v["rows"] if r["enav"] and r["enav"]["futures_move"] is not None), None)
     if x0:
         lines.append(f"估算因子：美股收盘 {v['us_close_date']} 纳指 {v['us_close_index']}；期货 {x0['futures_mid']}"

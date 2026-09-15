@@ -38,7 +38,7 @@ from qdii.io.http import BlockList, EndpointState, Fetcher
 from qdii.io.snapshot_store import SnapshotStore
 from qdii.pipeline.anchor_capture import HF_ENDPOINT, AnchorTracker
 from qdii.pipeline.host_windows import AvailabilityWindow, CloseWindow, CompositeWindow
-from qdii.pipeline.relative_state import ETF_ENDPOINT, RelativeState
+from qdii.pipeline.relative_state import ETF_ENDPOINT, RelativeState, input_gaps
 from qdii.pipeline.sources import EndpointConfig, load_sources, render_request
 from qdii.pipeline.windows import WEEKDAYS, HostWindow, parse_hhmm
 
@@ -46,6 +46,7 @@ log = logging.getLogger("qdii.collect")
 
 # 所有等待都不超过该秒数再重读墙钟：macOS 睡眠期间单调钟可能不前进，长等待会在唤醒后迟到
 MAX_WAIT_S = 15.0
+GAP_RETRY_S = 120.0  # 估算所需输入缺失时，对应端点的最短重试间隔（仍受失败退避约束，四审 D2）
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ class Collector:
         self.transport = transport
         self.relative: RelativeState | None = None
         self.page_bundles = BundleCache()  # 状态页展示过的完整输入包（二审 F4）
+        self.input_gaps: set[str] = set()  # 估算当前缺数据的端点（由最近一次构包得出，四审 D2）
         self.names: dict[str, str] = {}
         if repo_root is not None and (repo_root / "config" / "funds.toml").exists():
             self.relative = new_state(repo_root, root, update_ledger=True)
@@ -159,7 +161,8 @@ class Collector:
             for err in self.relative.cal.errors:  # AT58/60：日历覆盖问题必须可见
                 self.events.emit("CALENDAR_UNCERTAIN", error=err)
             n = await asyncio.to_thread(replay_into, self.relative, root, now)
-            self.events.emit("RELATIVE_BOOTSTRAP", messages=n)
+            self.input_gaps = input_gaps(self.relative.bundle(now))  # 冷启动：缺什么先补什么
+            self.events.emit("RELATIVE_BOOTSTRAP", messages=n, input_gaps=sorted(self.input_gaps))
         if self.anchors is not None:
             n = await asyncio.to_thread(self._bootstrap_anchors, root, now)
             self.health.anchors_recent = self.anchor_store.recent()
@@ -273,7 +276,7 @@ class Collector:
                 if interval is None:
                     await self._sleep(MAX_WAIT_S)
                     continue
-                started = self.clock.monotonic_ns()
+                started, started_wall = self.clock.monotonic_ns(), self.clock.now_utc_ns()
                 assert self.fetcher is not None
                 msg = await self.fetcher.fetch(render_request(req, self.clock.now_utc_ns()), next(self.seq))
                 self._write(msg)
@@ -286,8 +289,9 @@ class Collector:
                 self._on_relative_input(msg)
                 if self.anchors is not None:
                     self.anchors.ingest(msg)
-                delay = max(interval, state.backoff_s())
-                await self._sleep_until_next(started, delay)
+                backoff = state.backoff_s()
+                await self._sleep_until_next(started, started_wall, max(interval, backoff), req.endpoint_id,
+                                             max(GAP_RETRY_S, backoff))
         except DiskFull:
             self.exit_code = 2
             self.stop.set()
@@ -299,10 +303,21 @@ class Collector:
             self.exit_code = 1
             self.stop.set()  # 交给 launchd 重启，避免静默半残运行
 
-    async def _sleep_until_next(self, started_mono: int, delay_s: float) -> None:
-        """长间隔（如净值 900 秒）分段等待，每段后检查窗口是否已关闭。"""
+    async def _sleep_until_next(self, started_mono: int, started_wall: int, delay_s: float,
+                                endpoint_id: str | None = None, gap_delay_s: float | None = None) -> None:
+        """长间隔（如指数日数据 3600 秒）分段等待；任一条件满足即结束等待、重新取数（四审 D2）：
+
+        - 单调钟或墙钟任一已走过间隔：macOS 睡眠时单调钟不前进而墙钟前进，唤醒后立即刷新，不再补等睡前剩余时间；
+          墙钟回拨时仍由单调钟兜底；
+        - 该端点是估算当前缺失的输入，且已过最短重试间隔（不低于失败退避）；
+        - 窗口已关闭。
+        """
         while not self.stop.is_set():
-            remaining = delay_s - (self.clock.monotonic_ns() - started_mono) / 1e9
+            elapsed = max(self.clock.monotonic_ns() - started_mono, self.clock.now_utc_ns() - started_wall) / 1e9
+            limit = delay_s
+            if gap_delay_s is not None and endpoint_id in self.input_gaps:
+                limit = min(delay_s, gap_delay_s)
+            remaining = limit - elapsed
             if remaining <= 0 or not self._in_window(self.clock.now_utc_ns()):
                 return
             await self._sleep(min(remaining, MAX_WAIT_S))
@@ -341,6 +356,7 @@ class Collector:
             return
         try:
             bundle = self.relative.bundle(msg.received_utc_ns)  # ADR-010：知识截止 = 触发消息的 received_at
+            self.input_gaps = input_gaps(bundle)
             snap = evaluate_bundle(bundle)
             self.snapshots.append(canonical_json(bundle), snapshot_to_dict(snap), self.clock.now_utc_ns())
             self.health.relative_last_bundle_id = snap.bundle_id

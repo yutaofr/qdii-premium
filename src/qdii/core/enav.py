@@ -8,8 +8,12 @@
 - F(c)：新浪 hf_NQ 昨结算（CME 日结算与 16:00 ET 收盘同刻）；F(t)：同一行情行的买卖价中点，按成员报价时刻 as-of 取。
 - X(t)：CFETS USD/CNY 即期买卖价中点，同样按成员报价时刻 as-of 取。
 
-结果只分两态：PROXY_ANCHOR（已算出，锚点为未验证代理）/ UNAVAILABLE（缺输入或检查失败，给出原因）。
-满仓假设（FULL_EXPOSURE_ASSUMPTION）、合约月份未知（CONTRACT_UNKNOWN）始终随结果披露。
+结果三态（四审 D1）：
+- PROXY_ANCHOR：连续交易中、按知识截止时刻检查 ETF/期货/汇率都够新，可作"当前"盘中代理估算（结算日未验证）；
+- REFERENCE：收盘/午休参考快照上的估算，只是历史参考，不代表当前可交易；
+- UNAVAILABLE：缺输入、过期、阶段或日历不满足，给出原因。
+满仓假设（FULL_EXPOSURE_ASSUMPTION）、合约月份未知（CONTRACT_UNKNOWN）、结算锚点为代理始终随结果披露。
+独立于相对比较的准入：同日期子集退出等 R 条件不影响 E。
 """
 
 from __future__ import annotations
@@ -24,8 +28,9 @@ SETTLE_PUBLISH_LAG_NS = 2 * 3600 * 1_000_000_000  # CME 18:00 ET 重新开盘后
 
 @dataclass(frozen=True, slots=True)
 class EnavPolicy:
-    version: str = "EPOL-0.1-PROXY"
-    futures_max_age_s: float = 60.0  # 期货样本相对成员报价时刻
+    version: str = "EPOL-0.2-PROXY"
+    quote_max_age_s: float = 60.0  # 当前估算：ETF 报价相对知识截止时刻（与相对比较 max_age_s 一致）
+    futures_max_age_s: float = 60.0  # 期货样本相对成员报价时刻，当前估算时同时相对知识截止时刻
     fx_max_age_s: float = 120.0  # CFETS 每 30 秒轮询
     basis_min: float = -0.005  # 昨结算 / 指数收盘 − 1 的合理范围（持有成本为正，近到期趋近 0）
     basis_max: float = 0.03
@@ -36,6 +41,10 @@ class EnavInput:
     code: str
     price: float | None  # 比较口径价格（连续交易为卖一，否则最新价）
     quote_time_utc_ns: int | None
+    cutoff_utc_ns: int
+    current: bool  # 输入包为连续交易（CURRENT）模式
+    phase_ok: bool  # 报价所处阶段合格（连续交易，或收盘参考冻结快照）
+    calendar_ok: bool  # 截止日与该成员锚点日期都在日历覆盖范围内
     nav: float | None
     nav_usable: bool  # 已通过净值校验且无事件/规则隔离
     index_date: date | None  # a 对应的美股交易日
@@ -54,7 +63,7 @@ class EnavInput:
 @dataclass(frozen=True, slots=True)
 class EnavResult:
     code: str
-    status: str  # PROXY_ANCHOR / UNAVAILABLE
+    status: str  # PROXY_ANCHOR / REFERENCE / UNAVAILABLE
     enav: float | None
     premium: float | None
     index_move: float | None  # I(c)/I(a)
@@ -76,6 +85,16 @@ def _pos(x: float | None) -> bool:
 
 def evaluate_enav(m: EnavInput, policy: EnavPolicy) -> EnavResult:
     missing: list[ReasonCode] = []
+    if not m.calendar_ok:
+        missing.append(ReasonCode.CALENDAR_UNCERTAIN)
+    if not m.phase_ok:
+        missing.append(ReasonCode.SESSION_BOUNDARY)
+    if m.current:  # 四审 D1：当前估算按知识截止时刻检查各输入时效，旧行情停更后不得继续显示为可用
+        for t, limit, reason in ((m.quote_time_utc_ns, policy.quote_max_age_s, ReasonCode.TIME_SKEW),
+                                 (m.futures_time_utc_ns, policy.futures_max_age_s, ReasonCode.TIME_SKEW),
+                                 (m.fx_time_utc_ns, policy.fx_max_age_s, ReasonCode.FX_STALE)):
+            if t is not None and (m.cutoff_utc_ns - t) / 1e9 > limit:
+                missing.append(reason)
     if not (_pos(m.nav) and m.nav_usable):
         missing.append(ReasonCode.NAV_REJECTED if _pos(m.nav) else ReasonCode.NAV_MISSING)
     if not (_pos(m.index_at_anchor) and _pos(m.fx_at_anchor) and m.index_date is not None):
@@ -113,7 +132,7 @@ def evaluate_enav(m: EnavInput, policy: EnavPolicy) -> EnavResult:
                           tuple(dict.fromkeys(missing)))
     enav = m.nav * index_move * futures_move * fx_move  # type: ignore[operator]
     return EnavResult(
-        m.code, "PROXY_ANCHOR", enav, m.price / enav - 1,  # type: ignore[operator]
+        m.code, "PROXY_ANCHOR" if m.current else "REFERENCE", enav, m.price / enav - 1,  # type: ignore[operator]
         index_move, futures_move, fx_move, basis, f_age, x_age,
         (ReasonCode.SETTLEMENT_ANCHOR_PROXY, ReasonCode.CONTRACT_UNKNOWN, ReasonCode.FULL_EXPOSURE_ASSUMPTION),
     )

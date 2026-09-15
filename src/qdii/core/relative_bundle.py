@@ -246,7 +246,9 @@ def _enav(bundle: RelativeBundle) -> tuple[EnavResult, ...]:
     c = date.fromisoformat(bundle.us_close_date) if bundle.us_close_date else None
     return tuple(
         evaluate_enav(EnavInput(
-            code=m.code, price=_num(m.price), quote_time_utc_ns=m.quote_time_utc_ns, nav=_num(m.nav),
+            code=m.code, price=_num(m.price), quote_time_utc_ns=m.quote_time_utc_ns,
+            cutoff_utc_ns=bundle.cutoff_utc_ns, current=bundle.mode == RelativeMode.CURRENT.value,
+            phase_ok=m.phase_ok, calendar_ok=bundle.calendar_covered and m.anchor_calendar_covered, nav=_num(m.nav),
             nav_usable=m.nav_verified and not m.nav_reasons,
             index_date=date.fromisoformat(m.index_date) if m.index_date else None,
             index_at_anchor=_num(m.index_at_anchor), fx_at_anchor=_num(m.fx_at_anchor),

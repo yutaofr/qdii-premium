@@ -1,6 +1,6 @@
 # qdii-premium
 
-纳指100 QDII ETF 溢价监测。当前状态：研究预览。A 股交易时段提供**估算溢价**（纳指期货实时价相对昨结算的涨跌 + 即期汇率推算估算净值；期货锚点为昨结算代理，尚未验证，见勘误 E8）与五只之间的**相对比较**；Phase 0 真实会话积累中。
+纳指100 QDII ETF 溢价监测。当前状态：研究预览。A 股交易时段提供**盘中代理估算溢价**（纳指期货实时价相对昨结算的涨跌 + 即期汇率推算估算净值；结算日未验证、无误差范围，见勘误 E8），收盘后显示收盘参考估算；另有五只之间的**相对比较**。打开或唤醒电脑即可使用，不需要夜间开机。
 
 - MVP 验收：[reports/mvp/acceptance.md](reports/mvp/acceptance.md)；评审与处理：[review](reports/mvp/review-2026-09-15.md)、[response](reports/mvp/review-2026-09-15-response.md)
 

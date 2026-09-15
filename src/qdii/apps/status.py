@@ -58,6 +58,7 @@ def _fmt(utc_ns: int | None) -> str:
 
 MODE_CN = {"CURRENT": "当前比较（连续交易，按卖一价，买入口径）", "CLOSING_REFERENCE": "收盘/午间参考（按最新价/收盘价，不代表当前可交易）"}
 PAIR_CN = {"ROBUST_DIFFERENCE": "超出情景边界", "UNRESOLVED": "未能区分", "MODEL_REFERENCE": "仅模型参考"}
+ENAV_CN = {"PROXY_ANCHOR": "盘中代理估算（结算日未验证）", "REFERENCE": "收盘参考估算（非当前）"}
 FRESH_CN = {"CURRENT": "新", "RECENT": "较新", "AGING": "变旧", "STALE": "过期", "UNKNOWN": "未知", "NOT_APPLICABLE": "—"}
 
 
@@ -86,8 +87,10 @@ def render_relative(rel: dict[str, Any] | None) -> str:
         x = r.get("enav") or {}
         if x.get("premium") is not None:
             p = x["premium"]
-            enav_cell = (f"<b>{'溢价' if p >= 0 else '折价'} {abs(p) * 100:.2f}%</b>"
-                         f"<br><span class='small'>估算净值 {x['value']:.4f}</span>")
+            label = ENAV_CN.get(x["status"], x["status"])
+            strong = ("b", "b") if x["status"] == "PROXY_ANCHOR" else ("span class='muted'", "span")
+            enav_cell = (f"<{strong[0]}>{'溢价' if p >= 0 else '折价'} {abs(p) * 100:.2f}%</{strong[1]}>"
+                         f"<br><span class='small'>{label}；估算净值 {x['value']:.4f}</span>")
         else:
             enav_cell = f"—<br><span class='small'>{e(', '.join(x.get('reasons', [])) or '未计算')}</span>"
         enav_detail = ("" if x.get("value") is None else
@@ -121,7 +124,7 @@ def render_relative(rel: dict[str, Any] | None) -> str:
 <p>知识截止 {_fmt(rel['cutoff_utc_ns'])}；快照 {_fmt(rel['tau_utc_ns'])}；比较状态 <b>{e(rel['status'])}</b>；
 参与比较成员锚点最旧 {rel['max_anchor_sessions']} 个交易日（{e(q['anchor_health'])}）；机会提醒 {'允许' if rel['opportunity_alert_allowed'] else '关闭'}</p>
 <div class="wrap"><table>
-<tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>估算溢价<br><span class='small'>昨结算代理锚点</span></th><th>相对最便宜</th><th>与下一名</th>
+<tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>估算溢价<br><span class='small'>昨结算代理锚点，结算日未验证</span></th><th>相对最便宜</th><th>与下一名</th>
 <th>官方净值对照<br><span class='small'>最新价/已披露净值</span></th><th>净值日</th><th>新鲜度</th><th></th></tr>{''.join(rows)}</table></div>
 <p class="small">相对价差 = (价格/单位净值) 之比 − 1，不是绝对溢价百分点；"官方净值对照"用的是已披露的旧净值，不是估算净值。
 模型 M0 满仓假设（{e(q['provenance_confidence'])}，{e(q['model_status'])}）；延迟 {e(q['delay_status'])}；原因 {e(reasons)}。</p>
