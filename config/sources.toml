@@ -1,0 +1,126 @@
+# Phase 0 采集端点（DS-02 ~ DS-08）。
+# 端点窗口是交易时段的超集，只决定轮询频率，不表达是否开市（见 pipeline/windows.py）。
+# 所有轮询另受 collector.toml 的 [host_window]（巴黎 07:30 至 A 股收盘）约束，窗口外一律不请求。
+# 新浪端点须带 Referer（2026-09-15 法国主机实测，DS-08 已接受）。
+
+[defaults]
+user_agent = "qdii-premium-collector/0.1 (personal research)"
+timeout_s = 15
+
+# ---------------- ETF 报价 ----------------
+
+[[endpoint]]
+id = "sina.etf_batch"
+source_id = "sina"
+url = "https://hq.sinajs.cn/list=sh513100,sz159696,sz159501,sz159660,sh513390"
+headers = { Referer = "https://finance.sina.com.cn/" }
+contract = "sina_a_share_v1"
+idle_interval_s = 600
+windows = [
+  { tz = "Asia/Shanghai", start = "09:10", end = "15:10", interval_s = 5 },
+]
+
+[[endpoint]]
+id = "tencent.etf_batch"
+source_id = "tencent"
+url = "https://qt.gtimg.cn/q=sh513100,sz159696,sz159501,sz159660,sh513390"
+idle_interval_s = 1800
+windows = [
+  { tz = "Asia/Shanghai", start = "09:10", end = "15:10", interval_s = 15 },
+]
+
+[[endpoint]]
+id = "eastmoney.stock_get.513100"
+source_id = "eastmoney"
+url = "https://push2.eastmoney.com/api/qt/stock/get?secid=1.513100&fields=f43,f57,f58,f59,f60,f86"
+idle_interval_s = 1800
+windows = [
+  { tz = "Asia/Shanghai", start = "09:10", end = "15:10", interval_s = 30 },
+]
+
+# ---------------- 单位净值 ----------------
+
+[[endpoint]]
+id = "eastmoney.lsjz.513100"
+source_id = "eastmoney"
+url = "https://api.fund.eastmoney.com/f10/lsjz?fundCode=513100&pageIndex=1&pageSize=5"
+headers = { Referer = "https://fundf10.eastmoney.com/" }
+idle_interval_s = 900
+
+[[endpoint]]
+id = "eastmoney.lsjz.159696"
+source_id = "eastmoney"
+url = "https://api.fund.eastmoney.com/f10/lsjz?fundCode=159696&pageIndex=1&pageSize=5"
+headers = { Referer = "https://fundf10.eastmoney.com/" }
+idle_interval_s = 900
+
+[[endpoint]]
+id = "eastmoney.lsjz.159501"
+source_id = "eastmoney"
+url = "https://api.fund.eastmoney.com/f10/lsjz?fundCode=159501&pageIndex=1&pageSize=5"
+headers = { Referer = "https://fundf10.eastmoney.com/" }
+idle_interval_s = 900
+
+[[endpoint]]
+id = "eastmoney.lsjz.159660"
+source_id = "eastmoney"
+url = "https://api.fund.eastmoney.com/f10/lsjz?fundCode=159660&pageIndex=1&pageSize=5"
+headers = { Referer = "https://fundf10.eastmoney.com/" }
+idle_interval_s = 900
+
+[[endpoint]]
+id = "eastmoney.lsjz.513390"
+source_id = "eastmoney"
+url = "https://api.fund.eastmoney.com/f10/lsjz?fundCode=513390&pageIndex=1&pageSize=5"
+headers = { Referer = "https://fundf10.eastmoney.com/" }
+idle_interval_s = 900
+
+# ---------------- NQ（身份与时效探测；美股收盘锚点不在主机窗口内，E 路径暂不采锚点） ----------------
+
+[[endpoint]]
+id = "sina.hf_NQ"
+source_id = "sina"
+url = "https://hq.sinajs.cn/list=hf_NQ"
+headers = { Referer = "https://finance.sina.com.cn/" }
+idle_interval_s = 60
+windows = [
+  { tz = "Asia/Shanghai", start = "09:10", end = "15:10", interval_s = 5 },
+]
+
+# ---------------- 汇率 ----------------
+
+[[endpoint]]
+id = "sina.fx_spot"
+source_id = "sina"
+url = "https://hq.sinajs.cn/list=fx_susdcny,fx_susdcnh"
+headers = { Referer = "https://finance.sina.com.cn/" }
+idle_interval_s = 60
+windows = [
+  { tz = "Asia/Shanghai", start = "09:10", end = "15:10", interval_s = 10 },
+]
+
+[[endpoint]]
+id = "cfets.fx_spot_quot"
+source_id = "cfets"
+url = "https://www.chinamoney.com.cn/r/cms/www/chinamoney/data/fx/rfx-sp-quot.json"
+idle_interval_s = 300
+windows = [
+  { tz = "Asia/Shanghai", start = "09:20", end = "15:10", interval_s = 30 },
+]
+
+[[endpoint]]
+id = "safe.midrate_page"
+source_id = "safe"
+url = "https://www.safe.gov.cn/safe/rmbhlzjj/index.html"
+idle_interval_s = 3600
+windows = [
+  { tz = "Asia/Shanghai", start = "09:10", end = "10:00", interval_s = 300 },
+]
+
+# ---------------- NDX 历史（编码负载，只录制） ----------------
+
+[[endpoint]]
+id = "sina.ndx_history"
+source_id = "sina"
+url = "https://finance.sina.com.cn/staticdata/us/.NDX"
+idle_interval_s = 3600

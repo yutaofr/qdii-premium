@@ -1,0 +1,47 @@
+# FundProfile 初始配置（DS-11，FR01）。以 exchange + code 识别，名称仅展示。
+# nav_fx_rule：PH0-07 历史拟合结论（五只均为 L0_FX_T），状态 MODEL_ASSUMPTION；PH0-06 文件核验后才可改为 VERIFIED。
+
+[[fund]]
+exchange = "SSE"
+code = "513100"
+name = "国泰纳斯达克100ETF"
+factor_group = "NDX_USD_UNHEDGED"
+nav_fx_rule = "L0_FX_T"
+nav_fx_rule_status = "MODEL_ASSUMPTION"
+nav_fx_rule_evidence = "reports/phase0/history/RESEARCH-20260915T072333Z/findings.md"
+
+[[fund]]
+exchange = "SZSE"
+code = "159696"
+name = "易方达纳斯达克100ETF(QDII)"
+factor_group = "NDX_USD_UNHEDGED"
+nav_fx_rule = "L0_FX_T"
+nav_fx_rule_status = "MODEL_ASSUMPTION"
+nav_fx_rule_evidence = "reports/phase0/history/RESEARCH-20260915T072333Z/findings.md"
+
+[[fund]]
+exchange = "SZSE"
+code = "159501"
+name = "嘉实纳斯达克100ETF(QDII)"
+factor_group = "NDX_USD_UNHEDGED"
+nav_fx_rule = "L0_FX_T"
+nav_fx_rule_status = "MODEL_ASSUMPTION"
+nav_fx_rule_evidence = "reports/phase0/history/RESEARCH-20260915T072333Z/findings.md"
+
+[[fund]]
+exchange = "SZSE"
+code = "159660"
+name = "汇添富纳斯达克100ETF(QDII)"
+factor_group = "NDX_USD_UNHEDGED"
+nav_fx_rule = "L0_FX_T"
+nav_fx_rule_status = "MODEL_ASSUMPTION"
+nav_fx_rule_evidence = "reports/phase0/history/RESEARCH-20260915T072333Z/findings.md"
+
+[[fund]]
+exchange = "SSE"
+code = "513390"
+name = "博时纳斯达克100ETF(QDII)"
+factor_group = "NDX_USD_UNHEDGED"
+nav_fx_rule = "L0_FX_T"
+nav_fx_rule_status = "MODEL_ASSUMPTION"
+nav_fx_rule_evidence = "reports/phase0/history/RESEARCH-20260915T072333Z/findings.md"

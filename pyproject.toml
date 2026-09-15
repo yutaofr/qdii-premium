@@ -1,0 +1,50 @@
+[project]
+name = "qdii-premium"
+version = "0.1.0"
+description = "Nasdaq-100 QDII ETF relative valuation and premium monitor (Phase 0 tooling)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "exchange-calendars>=4.5",
+    "httpx>=0.27,<1",
+]
+
+[project.scripts]
+qdii = "qdii.apps.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qdii"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "hypothesis>=6",
+    "import-linter>=2",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.importlinter]
+root_package = "qdii"
+
+[[tool.importlinter.contracts]]
+name = "Layered architecture (ADD-0 §3.2)"
+type = "layers"
+layers = [
+    "qdii.apps",
+    "qdii.pipeline",
+    "qdii.io",
+    "qdii.contracts",
+    "qdii.core",
+]
+# 标准库层面的纯度约束（core/contracts 不得做 I/O、读时钟）由 tests/test_architecture.py 检查。

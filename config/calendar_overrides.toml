@@ -1,0 +1,32 @@
+# 交易日历覆盖（DS-10）。修改后须停止采集 → 校验 → 整体重载；版本哈希写入 RuleSnapshot。
+
+# 深交所：exchange_calendars 无 XSHE。沪深交易日安排由同一休市公告发布；
+# 实测证据：深市 159696/159501/159660 与沪市 513100/513390 在 2025-01-02—2026-09-11 的
+# 412 个净值日期完全相同，且与 XSHG 交易日一致（reports/phase0/calendar/findings.md）。
+[alias.SZSE]
+calendar = "XSHG"
+
+[alias.SSE]
+calendar = "XSHG"
+
+[alias.NASDAQ]
+calendar = "XNYS"   # 纳斯达克与纽交所休市及提前收盘安排相同；实测与 NDX 425 个收盘日一致
+
+# 集合竞价时段（北京时间）。连续交易与午休由日历给出。
+# 收盘集合竞价对沪深 ETF 的适用性以交易所规则为准，Phase 0 暂按 14:57—15:00 标注。
+[auction.SSE]
+tz = "Asia/Shanghai"
+opening = ["09:15", "09:25"]
+closing = ["14:57", "15:00"]
+
+[auction.SZSE]
+tz = "Asia/Shanghai"
+opening = ["09:15", "09:25"]
+closing = ["14:57", "15:00"]
+
+# 临时休市：库未包含、但已由官方公告确认的休市日。示例格式：
+# [[closure]]
+# market = "SSE"
+# date = "2026-09-25"
+# source = "交易所公告链接"
+# received_at = "2026-09-15T08:00:00Z"

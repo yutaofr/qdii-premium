@@ -1,0 +1,30 @@
+# 采集守护进程配置（ADD-0 §8）
+
+data_root = "~/qdii-data"   # 不放在桌面/文稿/下载/iCloud 目录
+run_label = "home-mac"      # 写入 run_id；不使用主机名
+
+# 主机可用窗口（2026-09-15 维护者决定，ADD-0 §15）：巴黎时间 07:30 起至 A 股收盘。
+# 窗口外不发请求、不持有防睡眠断言；窗口外缺口记为 OFF_WINDOW_GAP。
+# 终点取北京 15:05：留 5 分钟取到 15:00 收盘后的最终快照。
+# 夏令时窗口 = 北京 13:30—15:05（95 分钟）；10-25 起冬令时 = 北京 14:30—15:05（35 分钟）。
+[host_window]
+start_tz = "Europe/Paris"
+start = "07:30"
+end_tz = "Asia/Shanghai"
+end = "15:05"
+weekdays = [0, 1, 2, 3, 4]
+
+[heartbeat]
+interval_s = 30
+gap_threshold_s = 90        # 超过即记录 COLLECTOR_GAP
+
+[host_probe]
+interval_s = 600            # 电源来源、NTP 偏移、磁盘余量
+min_disk_free_gb = 20
+max_clock_offset_ms = 2000
+
+[status]
+enabled = true              # 始终在 127.0.0.1 提供
+port = 8787
+lan_enabled = false         # 2026-09-15 决定：防火墙保持“阻止所有传入连接”，状态页只在本机查看
+interface = "en0"           # lan_enabled=true 时只绑定该接口的 IPv4 私网地址（ADR-014）

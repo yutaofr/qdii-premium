@@ -1,0 +1,88 @@
+{
+ "origin": "~/qdii-data/evidence/phase0/reach/20260914T231217Z/raw.jsonl (sha256 becb14bbe38f9b03498d2208a161b171ad54bf6cf76631e7fb4bfab08025ee43)",
+ "note": "实采样本（PROBE），非合成夹具",
+ "messages": [
+  {
+   "msg_id": "sina:1789427544164926000:0",
+   "run_id": "PROBE-20260914T231217Z-home-mac",
+   "source_id": "sina",
+   "endpoint_id": "etf_batch",
+   "variant": "no_referer",
+   "request": {
+    "method": "GET",
+    "url": "https://hq.sinajs.cn/list=sh513100,sz159696,sz159501,sz159660,sh513390",
+    "headers": {
+     "User-Agent": "qdii-premium-probe/0.1 (personal research)"
+    }
+   },
+   "status": 403,
+   "error": null,
+   "body_b64": "Rm9yYmlkZGVu",
+   "body_sha256": "78342a0905a72ce44da083dcb5d23b8ea0c16992ba2a82eece97e033d76ba3d3",
+   "received_utc_ns": 1789427544164926000,
+   "rtt_ms": 6357.6
+  },
+  {
+   "msg_id": "sina:1789427546450143000:1",
+   "run_id": "PROBE-20260914T231217Z-home-mac",
+   "source_id": "sina",
+   "endpoint_id": "etf_batch",
+   "variant": "referer",
+   "request": {
+    "method": "GET",
+    "url": "https://hq.sinajs.cn/list=sh513100,sz159696,sz159501,sz159660,sh513390",
+    "headers": {
+     "User-Agent": "qdii-premium-probe/0.1 (personal research)",
+     "Referer": "https://finance.sina.com.cn/"
+    }
+   },
+   "status": 200,
+   "error": null,
+   "body_b64": "dmFyIGhxX3N0cl9zaDUxMzEwMD0ixMnWuEVURrn6zKksMi4xOTUsMi4yMDEsMi4xOTEsMi4xOTUsMi4xODcsMi4xOTEsMi4xOTIsMTA4MzA2MzI5LDIzNzE5MjcwMC4wMDAsMTQ4MTAwLDIuMTkxLDI1MDIwMCwyLjE5MCw1MDk1NzEsMi4xODksNTM2OTAwLDIuMTg4LDQ2MDgwMCwyLjE4Nyw4NTI2MDAsMi4xOTIsMTU2MTIwMCwyLjE5MywxNjAyMDAsMi4xOTQsNzc5NjAwLDIuMTk1LDEwMjEwMCwyLjE5NiwyMDI2LTA5LTE0LDE1OjM0OjU5LDAwLER8MTk0NDAwfDQyNTkzMC40MCI7CnZhciBocV9zdHJfc3oxNTk2OTY9IsTJMTAwRVRGLDIuMDA2LDIuMDEyLDEuOTk5LDIuMDA2LDEuOTk3LDEuOTk4LDEuOTk5LDU2MDMyMDAwLDExMjA1NDY3MS42MDAsMzgzNDAwLDEuOTk4LDk2NTMwMCwxLjk5Nyw1OTIzMDAsMS45OTYsNzgyODAwLDEuOTk1LDU5NDAwLDEuOTk0LDExODMwMCwxLjk5OSw0MjI1MDAsMi4wMDAsODM2MDAsMi4wMDEsOTk1MDAsMi4wMDIsMjY2MDAsMi4wMDMsMjAyNi0wOS0xNCwxNTozNTowMCwwMCxEfDEwNjEwMHwyMTIwOTMuOTAwIjsKdmFyIGhxX3N0cl9zejE1OTUwMT0ixMnWuLv5vfAsMi4wOTIsMi4wOTIsMi4wODMsMi4wOTMsMi4wODAsMi4wODIsMi4wODMsMzE3ODg5MDAsNjYyOTcxNzcuMDAwLDMwODIwMCwyLjA4MiwyNjU3MDAsMi4wODEsMTM2NTUwMCwyLjA4MCwxNTY5MDAsMi4wNzksMzg2NjAwLDIuMDc4LDM3NjYwMCwyLjA4MywxMTc1MDAsMi4wODQsMzg5NzAwLDIuMDg1LDE4MjIwMCwyLjA4NiwyODgwMCwyLjA4NywyMDI2LTA5LTE0LDE1OjM1OjMwLDAwLER8MzU3MDB8NzQzNjMuMTAwIjsKdmFyIGhxX3N0cl9zejE1OTY2MD0ixMnWuDEwMCwyLjMzMCwyLjM0MSwyLjMyMSwyLjMzMCwyLjMyMSwyLjMyMCwyLjMyMSw2MTc2NDQwMCwxNDM2OTQ5MjMuNTAwLDI4NDkwMCwyLjMyMCw4OTAwLDIuMzE5LDUxMjAwLDIuMzE4LDUyMDAwLDIuMzE3LDE0MDAwLDIuMzE2LDI1ODUwMCwyLjMyMSwxMjgwMCwyLjMyMiwzNjA3MDAsMi4zMjMsNjYzMDAsMi4zMjQsMjk5NDAwLDIuMzI1LDIwMjYtMDktMTQsMTU6MzU6NDUsMDAsRHw2Mzg2MDB8MTQ4MjE5MC42MDAiOwp2YXIgaHFfc3RyX3NoNTEzMzkwPSLEyda4MTAwRVRGsqnKsSwyLjQwMSwyLjQwNiwyLjM4OSwyLjQwMSwyLjM4OCwyLjM4OSwyLjM5MCwyMTU1NzEwMSw1MTYxMjM0Ni4wMDAsMjAwMDAsMi4zODksMjU5NDAwLDIuMzg4LDIzNjAwLDIuMzg3LDQ1MTAwLDIuMzg2LDEwOTQwMCwyLjM4NSw0MjkwMDAsMi4zOTAsMzk5MzAwLDIuMzkxLDE4MTYwMCwyLjM5MiwxNjkzMDAsMi4zOTMsMTM2MDAsMi4zOTQsMjAyNi0wOS0xNCwxNTozNDo1OSwwMCxEfDgwMHwxOTExLjIwIjsK",
+   "body_sha256": "b9d231f60344a968e4ae7f754396ced11f1ff11d91c793d14f785e87ecd34bf9",
+   "received_utc_ns": 1789427546450143000,
+   "rtt_ms": 777.0
+  },
+  {
+   "msg_id": "sina:1789427562234573000:5",
+   "run_id": "PROBE-20260914T231217Z-home-mac",
+   "source_id": "sina",
+   "endpoint_id": "hf_NQ",
+   "variant": "no_referer",
+   "request": {
+    "method": "GET",
+    "url": "https://hq.sinajs.cn/list=hf_NQ",
+    "headers": {
+     "User-Agent": "qdii-premium-probe/0.1 (personal research)"
+    }
+   },
+   "status": 403,
+   "error": null,
+   "body_b64": "Rm9yYmlkZGVu",
+   "body_sha256": "78342a0905a72ce44da083dcb5d23b8ea0c16992ba2a82eece97e033d76ba3d3",
+   "received_utc_ns": 1789427562234573000,
+   "rtt_ms": 5600.2
+  },
+  {
+   "msg_id": "sina:1789427564339001000:6",
+   "run_id": "PROBE-20260914T231217Z-home-mac",
+   "source_id": "sina",
+   "endpoint_id": "hf_NQ",
+   "variant": "referer",
+   "request": {
+    "method": "GET",
+    "url": "https://hq.sinajs.cn/list=hf_NQ",
+    "headers": {
+     "User-Agent": "qdii-premium-probe/0.1 (personal research)",
+     "Referer": "https://finance.sina.com.cn/"
+    }
+   },
+   "status": 200,
+   "error": null,
+   "body_b64": "dmFyIGhxX3N0cl9oZl9OUT0iMjkxNjUuODAwLCwyOTE2Ny4yNTAsMjkxNjguNTAwLDI5MjAwLjAwMCwyOTE1NS4wMDAsMDc6MTI6NDMsMjkxNTIuMjUwLDI5MjAwLjAwMCwwLDEsMSwyMDI2LTA5LTE1LMTJy7m077/L1rjK/cbau/UsMCI7Cg==",
+   "body_sha256": "365d3ca5c90c1cd970926aea0ef540a90190608b39d5b718af5bfd194b3470fd",
+   "received_utc_ns": 1789427564339001000,
+   "rtt_ms": 598.9
+  }
+ ]
+}

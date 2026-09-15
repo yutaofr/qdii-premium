@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent（ADR-015 修订）：用户级、无需 sudo。FileVault 开启时，开机解锁即登录该用户，
+     与 LaunchDaemon 的可用时间相同。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.qdii-premium.collector</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>-m</string>
+    <string>qdii.apps.cli</string>
+    <string>collect</string>
+    <string>--config-dir</string>
+    <string>__REPO__/config</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>StandardOutPath</key>
+  <string>__DATA__/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__DATA__/logs/launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+</dict>
+</plist>

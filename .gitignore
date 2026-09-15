@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+dist/
+.DS_Store
+# 运行数据在仓库外（默认 ~/qdii-data）；探测报告保留在 reports/ 中作为 Phase 0 证据
+# 第三方原始响应与主机信息不入库（公开仓库，DS-08）
+reports/**/raw.jsonl
+reports/**/host.json
+reports/**/*.jsonl.gz

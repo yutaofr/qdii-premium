@@ -1,0 +1,172 @@
+"""局域网只读状态页（ADR-014）。
+
+只绑定指定接口的 IPv4 私网地址，不监听 0.0.0.0 / IPv6；来源地址不在该子网内直接拒绝。
+只处理 GET /（HTML）与 GET /health.json。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import html
+import ipaddress
+import json
+import logging
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from qdii.io import host
+
+log = logging.getLogger(__name__)
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _fmt(utc_ns: int | None) -> str:
+    if not utc_ns:
+        return "—"
+    t = datetime.fromtimestamp(utc_ns / 1e9, tz=UTC)
+    bj = t.astimezone(SHANGHAI).strftime("%m-%d %H:%M:%S")
+    local = t.astimezone().strftime("%H:%M:%S %Z")  # 仅展示用
+    return f"{bj} 北京 / {local}"
+
+
+def render_html(snap: dict[str, Any]) -> str:
+    e = html.escape
+    warn = "".join(f"<li>{e(w)}</li>" for w in snap["warnings"]) or "<li>无</li>"
+    host_info = snap["host"] or {}
+    ep_rows = "".join(
+        f"<tr class='{'bad' if ep['blocked'] or ep['consecutive_failures'] else ''}'>"
+        f"<td>{e(ep['id'])}</td><td>{ep['interval_now_s'] if ep['interval_now_s'] is not None else '停'}</td>"
+        f"<td>{ep['last_status'] or e(str(ep['last_error'] or '—'))}</td>"
+        f"<td>{_fmt(ep['last_ok_utc_ns'])}</td><td>{ep['last_rtt_ms'] or '—'}</td>"
+        f"<td>{ep['ok']}/{ep['fail']}</td><td>{e(ep['blocked'] or '')}</td></tr>"
+        for ep in snap["endpoints"]
+    )
+
+    def side(d: dict[str, Any] | None) -> str:
+        if not d:
+            return "—"
+        if d["state"] == "VALID":
+            return f"{d['price']} × {d['volume']}"
+        return f"{d['state']} {' '.join(d['reasons'])}"
+
+    etf_rows = "".join(
+        f"<tr><td>{e(sym)}</td><td>{row.get('last') or '—'}</td><td>{e(side(row.get('bid')))}</td>"
+        f"<td>{e(side(row.get('ask')))}</td><td>{_fmt(row.get('provider_utc_ns'))}</td>"
+        f"<td>{_fmt(row.get('received_utc_ns'))}</td></tr>"
+        for sym, row in sorted(snap["etf"].items())
+    )
+    events = "".join(
+        f"<tr><td>{_fmt(ev['utc_ns'])}</td><td>{e(ev['type'])}</td>"
+        f"<td>{e(json.dumps({k: v for k, v in ev.items() if k not in ('utc_ns', 'type')}, ensure_ascii=False))}</td></tr>"
+        for ev in reversed(snap["events_recent"])
+    )
+    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="15">
+<title>QDII 采集状态</title>
+<style>body{{font:14px -apple-system,sans-serif;margin:16px;color:#222}}table{{border-collapse:collapse;margin:8px 0 20px}}
+td,th{{border:1px solid #ddd;padding:4px 8px;text-align:left;white-space:nowrap}}th{{background:#f4f4f4}}
+.bad td{{background:#fff1f0}}.wrap{{overflow-x:auto}}h2{{font-size:16px;margin-top:20px}}</style></head><body>
+<h1 style="font-size:18px">QDII 采集状态</h1>
+<p>运行 {e(snap['run_id'])}；启动 {_fmt(snap['started_utc_ns'])}；心跳 {_fmt(snap['last_heartbeat_utc_ns'])}</p>
+<p>采集窗口：{'进行中' if snap['window']['active'] else '未开'}；
+{_fmt(snap['window'].get('start_utc_ns'))} → {_fmt(snap['window'].get('end_utc_ns'))}</p>
+<h2>告警</h2><ul>{warn}</ul>
+<h2>主机</h2><p>电源 {e(str(host_info.get('power_source')))}；NTP 偏移 {host_info.get('ntp_offset_ms')} ms；
+磁盘余量 {host_info.get('disk_free_gb')} GB；防睡眠 {host_info.get('sleep_assertion_alive')}；检查于 {_fmt(host_info.get('checked_utc_ns'))}</p>
+<h2>ETF（新浪，只做结构解析，未做质量判定）</h2><div class="wrap"><table>
+<tr><th>代码</th><th>最新</th><th>买一</th><th>卖一</th><th>供应商时间（未验证）</th><th>接收</th></tr>{etf_rows}</table></div>
+<h2>端点</h2><div class="wrap"><table>
+<tr><th>端点</th><th>当前间隔 s</th><th>最近状态</th><th>最近成功</th><th>RTT ms</th><th>成功/失败</th><th>封禁</th></tr>{ep_rows}</table></div>
+<p>解析问题计数：{e(json.dumps(snap['parse_issues'], ensure_ascii=False))}</p>
+<h2>最近事件</h2><div class="wrap"><table><tr><th>时间</th><th>类型</th><th>详情</th></tr>{events}</table></div>
+</body></html>"""
+
+
+async def serve_status(
+    snapshot: Callable[[], dict[str, Any]],
+    *,
+    interface: str,
+    port: int,
+    stop: asyncio.Event,
+    lan_enabled: bool = False,
+) -> None:
+    """本机回环始终提供（应用防火墙不拦回环）；局域网 IPv4 仅在 lan_enabled 时绑定，地址变化时重绑。"""
+    loopback = await asyncio.start_server(
+        _handler(snapshot, ipaddress.ip_network("127.0.0.0/8")), host="127.0.0.1", port=port
+    )
+    log.info("status page on http://127.0.0.1:%d", port)
+    try:
+        if not lan_enabled:
+            await stop.wait()
+        while lan_enabled and not stop.is_set():
+            lan = await asyncio.to_thread(host.lan_ipv4, interface)
+            if lan is None:
+                log.warning("status: no private IPv4 on %s; retry in 60s", interface)
+                await _wait(stop, 60)
+                continue
+            ip, cidr = lan
+            try:
+                server = await asyncio.start_server(
+                    _handler(snapshot, ipaddress.ip_network(cidr)), host=ip, port=port
+                )
+            except OSError as exc:  # 端口占用等：局域网监听失败不得影响回环状态页
+                log.warning("status: cannot bind %s:%d (%s); retry in 60s", ip, port, exc)
+                await _wait(stop, 60)
+                continue
+            log.info("status page on http://%s:%d (subnet %s)", ip, port, cidr)
+            try:
+                while not stop.is_set():  # 每 5 分钟检查地址是否变化（DHCP）
+                    await _wait(stop, 300)
+                    if await asyncio.to_thread(host.lan_ipv4, interface) != lan:
+                        log.info("status: LAN address changed, rebinding")
+                        break
+            finally:
+                server.close()
+                await server.wait_closed()
+    finally:
+        loopback.close()
+        await loopback.wait_closed()
+
+
+def _handler(snapshot: Callable[[], dict[str, Any]], allowed: ipaddress.IPv4Network | ipaddress.IPv6Network):
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            peer = writer.get_extra_info("peername")
+            if not peer or ipaddress.ip_address(peer[0]) not in allowed:
+                await _respond(writer, 403, "text/plain", b"forbidden")
+                return
+            request_line = (await asyncio.wait_for(reader.readline(), 5)).decode("latin-1").split()
+            while (await asyncio.wait_for(reader.readline(), 5)) not in (b"\r\n", b"\n", b""):
+                pass
+            if len(request_line) < 2 or request_line[0] != "GET":
+                await _respond(writer, 405, "text/plain", b"method not allowed")
+            elif request_line[1] == "/health.json":
+                body = json.dumps(snapshot(), ensure_ascii=False, default=str).encode()
+                await _respond(writer, 200, "application/json; charset=utf-8", body)
+            elif request_line[1] == "/":
+                await _respond(writer, 200, "text/html; charset=utf-8", render_html(snapshot()).encode())
+            else:
+                await _respond(writer, 404, "text/plain", b"not found")
+        except (TimeoutError, OSError, UnicodeDecodeError, ValueError):
+            pass  # 客户端断开、防火墙切断等；状态页故障不得影响采集
+        finally:
+            writer.close()
+
+    return handle
+
+
+async def _respond(writer: asyncio.StreamWriter, code: int, ctype: str, body: bytes) -> None:
+    reason = {200: "OK", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed"}[code]
+    head = (f"HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {len(body)}\r\n"
+            "Cache-Control: no-store\r\nConnection: close\r\n\r\n").encode()
+    writer.write(head + body)
+    await writer.drain()
+
+
+async def _wait(stop: asyncio.Event, seconds: float) -> None:
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+    except TimeoutError:
+        pass
