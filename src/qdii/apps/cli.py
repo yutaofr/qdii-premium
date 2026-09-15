@@ -142,6 +142,13 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     rel.set_defaults(func=cmd_relative)
 
+    rp = sub.add_parser("replay", help="确定性回放校验（FR11/NFR02）").add_subparsers(dest="replay_cmd", required=True)
+    rr = rp.add_parser("relative", help="重算已存相对比较快照；--stream 从原始日志重建输入包再比对")
+    rr.add_argument("--date", action="append", required=True, help="快照 UTC 日期 YYYY-MM-DD，可重复")
+    rr.add_argument("--stream", action="store_true")
+    rr.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    rr.set_defaults(func=cmd_replay_relative)
+
     rs = sub.add_parser("research", help="Phase 0 研究工具").add_subparsers(dest="research_cmd", required=True)
     f = rs.add_parser("fetch-history", help="抓取 NAV / NDX / 中间价历史到 research 原始日志")
     f.add_argument("--since", required=True, type=date.fromisoformat)
@@ -172,9 +179,18 @@ def cmd_relative(args: argparse.Namespace) -> int:
     else:
         cutoff = int(datetime.now(UTC).timestamp() * 1e9)
     repo = Path(__file__).resolve().parents[3]
-    group, ctx = build(Path(args.data_root).expanduser(), repo, cutoff, args.basis)
-    print(to_json(group, ctx) if args.json else render(group, ctx))
+    snap, bundle, names = build(Path(args.data_root).expanduser(), repo, cutoff, args.basis)
+    print(to_json(snap, bundle, names) if args.json else render(snap, bundle, names))
     return 0
+
+
+def cmd_replay_relative(args: argparse.Namespace) -> int:
+    from qdii.apps.replay_relative import verify
+
+    repo = Path(__file__).resolve().parents[3]
+    report = verify(Path(args.data_root).expanduser(), repo, args.date, stream=args.stream)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["mismatches"] == 0 and report["integrity_failures"] == 0 else 1
 
 
 def cmd_research_fetch(args: argparse.Namespace) -> int:

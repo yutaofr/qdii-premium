@@ -48,6 +48,8 @@ class Health:
     host_window: HostWindow | None = None
     window_active: bool = False
     in_window_gap_s: float = 0.0
+    relative_snapshots: int = 0
+    relative_last_bundle_id: str | None = None
 
     def absorb_parse(self, result: ParseResult) -> None:
         for issue in result.issues:
@@ -109,6 +111,7 @@ class Health:
             "last_heartbeat_utc_ns": self.last_heartbeat_utc_ns,
             "warnings": self.warnings(now_utc_ns),
             "window": self._window_info(now_utc_ns),
+            "relative_store": {"written": self.relative_snapshots, "last_bundle_id": self.relative_last_bundle_id},
             "host": None if self.host is None else {
                 "power_source": self.host.power_source,
                 "ntp_offset_ms": self.host.ntp_offset_ms,

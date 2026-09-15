@@ -1,0 +1,250 @@
+"""相对比较的不可变输入包与质量对象（FR06 / FR11 / FR12，ADR-009/010/011，纯函数）。
+
+InputBundle 自包含：成员价格、净值、时间、准入判定所需的全部输入，以及差分边界与规则版本。
+bundle_id = sha256(规范 JSON)。evaluate_bundle(bundle) 只依赖包内容，不读时钟、不做 I/O，
+因此在线计算与离线回放得到相同结果（浮点按 ADR-011 容差比较）。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from dataclasses import asdict, dataclass, replace
+from datetime import date
+from decimal import Decimal
+from enum import Enum
+from typing import Any
+
+from qdii.core.relative import (
+    GroupResult,
+    MemberInput,
+    PairBound,
+    RelativeMode,
+    RelativePolicy,
+    RelativeStatus,
+    evaluate_relative,
+)
+from qdii.core.types import ReasonCode
+
+SCHEMA_VERSION = 1
+FLOAT_TOLERANCE = 1e-10
+
+
+@dataclass(frozen=True, slots=True)
+class MemberSpec:
+    code: str
+    price: str | None  # 十进制字符串，已按 price_basis 取值（QS-04 之后）
+    volume: str | None  # 该侧可见数量，仅展示
+    quote_time_utc_ns: int | None
+    phase_ok: bool
+    nav: str | None
+    nav_date: str | None  # ISO 日期
+    nav_verified: bool
+    nav_reasons: tuple[str, ...] = ()
+    snapshot_msg_id: str | None = None
+    nav_msg_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RelativeBundle:
+    schema: int
+    cutoff_utc_ns: int
+    mode: str
+    price_basis: str
+    policy_version: str
+    max_age_s: float
+    max_span_s: float
+    sessions_since_anchor: int | None
+    model_status: str  # HISTORICAL_VALIDATED / UNCALIBRATED
+    members: tuple[MemberSpec, ...]
+    bounds: tuple[tuple[str, str, float, str], ...]  # (i, j, u_diff_ln, source)，i<j
+    versions: tuple[tuple[str, str], ...]
+    notes: tuple[str, ...] = ()
+
+
+def canonical_json(bundle: RelativeBundle) -> str:
+    return json.dumps(asdict(bundle), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def bundle_id(bundle: RelativeBundle) -> str:
+    return hashlib.sha256(canonical_json(bundle).encode("utf-8")).hexdigest()
+
+
+def bundle_from_dict(d: dict[str, Any]) -> RelativeBundle:
+    return RelativeBundle(
+        schema=d["schema"], cutoff_utc_ns=d["cutoff_utc_ns"], mode=d["mode"], price_basis=d["price_basis"],
+        policy_version=d["policy_version"], max_age_s=d["max_age_s"], max_span_s=d["max_span_s"],
+        sessions_since_anchor=d["sessions_since_anchor"], model_status=d["model_status"],
+        members=tuple(MemberSpec(**{**m, "nav_reasons": tuple(m["nav_reasons"])}) for m in d["members"]),
+        bounds=tuple((b[0], b[1], b[2], b[3]) for b in d["bounds"]),
+        versions=tuple((v[0], v[1]) for v in d["versions"]),
+        notes=tuple(d["notes"]),
+    )
+
+
+# ---------- 质量（QS-01~03） ----------
+
+def freshness(age_s: float | None) -> str:
+    """QS-02 唯一决策表：含上界。"""
+    if age_s is None or not math.isfinite(age_s):
+        return "UNKNOWN"
+    if age_s <= 15:
+        return "CURRENT"
+    if age_s <= 60:
+        return "RECENT"
+    if age_s <= 120:
+        return "AGING"
+    return "STALE"
+
+
+def anchor_health(sessions: int | None) -> str:
+    """QS-03：锚点后已完成交易时段数 0—3 NORMAL，4—10 AGED，>10 EXTENDED。"""
+    if sessions is None or sessions < 0:
+        return "INVALID"
+    if sessions <= 3:
+        return "NORMAL"
+    if sessions <= 10:
+        return "AGED"
+    return "EXTENDED"
+
+
+_FRESH_ORDER = ("CURRENT", "RECENT", "AGING", "STALE", "UNKNOWN")
+
+
+@dataclass(frozen=True, slots=True)
+class MemberQuality:
+    code: str
+    age_s: float | None
+    freshness: str
+
+
+@dataclass(frozen=True, slots=True)
+class RelativeQuality:
+    availability: str
+    freshness: str
+    provenance_confidence: str
+    delay_status: str
+    model_status: str
+    anchor_health: str
+    alignment: str
+    max_skew_s: float | None
+    reason_codes: tuple[str, ...]
+    members: tuple[MemberQuality, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RelativeSnapshot:
+    bundle_id: str
+    result: GroupResult
+    quality: RelativeQuality
+
+
+def evaluate_bundle(bundle: RelativeBundle) -> RelativeSnapshot:
+    if bundle.schema != SCHEMA_VERSION:
+        raise ValueError(f"unsupported bundle schema {bundle.schema}")
+    mode = RelativeMode(bundle.mode)
+    members = [
+        MemberInput(
+            code=m.code,
+            price=Decimal(m.price) if m.price is not None else None,
+            quote_time_utc_ns=m.quote_time_utc_ns,
+            phase_ok=m.phase_ok,
+            nav=Decimal(m.nav) if m.nav is not None else None,
+            nav_date=date.fromisoformat(m.nav_date) if m.nav_date else None,
+            nav_verified=m.nav_verified,
+            extra_reasons=tuple(ReasonCode(r) for r in m.nav_reasons),
+        )
+        for m in bundle.members
+    ]
+    health = anchor_health(bundle.sessions_since_anchor)
+    bounds = {frozenset((i, j)): PairBound(u, src) for i, j, u, src in bundle.bounds}
+    if health in ("EXTENDED", "INVALID"):
+        bounds = {}  # QS-03：EXTENDED 不授予 ROBUST_DIFFERENCE
+    policy = RelativePolicy(bundle.policy_version, bundle.max_age_s, bundle.max_span_s)
+    result = evaluate_relative(members, mode=mode, price_basis=bundle.price_basis,
+                               cutoff_utc_ns=bundle.cutoff_utc_ns, policy=policy, bounds=bounds)
+
+    extra: list[ReasonCode] = []
+    if health == "AGED":
+        extra.append(ReasonCode.ANCHOR_AGED)
+    elif health == "EXTENDED":
+        extra.append(ReasonCode.ANCHOR_EXTENDED)
+    elif health == "INVALID":
+        extra.append(ReasonCode.ANCHOR_INVALID)
+    if result.pairs and all(p.u_diff is None for p in result.pairs):
+        extra.append(ReasonCode.DIFFERENTIAL_UNCALIBRATED)
+    if extra:
+        result = replace(result, reasons=tuple(dict.fromkeys((*result.reasons, *extra))))
+
+    eligible = {m.code for m in result.members if m.eligible}
+    mq = tuple(
+        MemberQuality(
+            m.code,
+            None if m.quote_time_utc_ns is None else max(0.0, (bundle.cutoff_utc_ns - m.quote_time_utc_ns) / 1e9),
+            "NOT_APPLICABLE" if mode is RelativeMode.CLOSING_REFERENCE
+            else freshness(None if m.quote_time_utc_ns is None
+                           else (bundle.cutoff_utc_ns - m.quote_time_utc_ns) / 1e9),
+        )
+        for m in bundle.members
+    )
+    elig_times = [m.quote_time_utc_ns for m in bundle.members if m.code in eligible and m.quote_time_utc_ns]
+    if mode is RelativeMode.CLOSING_REFERENCE:
+        group_fresh = "NOT_APPLICABLE"
+    elif eligible:
+        group_fresh = max((q.freshness for q in mq if q.code in eligible), key=_FRESH_ORDER.index)
+    else:
+        group_fresh = "UNKNOWN"
+    quality = RelativeQuality(
+        availability="AVAILABLE" if result.status is not RelativeStatus.INELIGIBLE else "UNAVAILABLE",
+        freshness=group_fresh,
+        provenance_confidence="MODEL_ASSUMPTION",  # M0 满仓假设（QS-01）
+        delay_status="UNKNOWN",  # 新浪供应商时间尚未盘中验证
+        model_status=bundle.model_status,
+        anchor_health=health,
+        alignment=("ALIGNED" if len(eligible) >= 2 else "NOT_APPLICABLE"),
+        max_skew_s=((max(elig_times) - min(elig_times)) / 1e9) if len(elig_times) >= 2 else None,
+        reason_codes=tuple(r.value for r in result.reasons),
+        members=mq,
+    )
+    return RelativeSnapshot(bundle_id(bundle), result, quality)
+
+
+# ---------- 序列化与确定性比较 ----------
+
+def to_plain(obj: Any) -> Any:
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, Decimal | date):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, list | tuple):
+        return [to_plain(v) for v in obj]
+    return obj
+
+
+def snapshot_to_dict(snap: RelativeSnapshot) -> dict[str, Any]:
+    return {"bundle_id": snap.bundle_id, "result": to_plain(asdict(snap.result)),
+            "quality": to_plain(asdict(snap.quality))}
+
+
+def diff_plain(a: Any, b: Any, path: str = "", tol: float = FLOAT_TOLERANCE) -> list[str]:
+    """枚举/字符串/整数精确相等，浮点绝对差 ≤ tol（ADR-011）。返回差异路径列表。"""
+    if isinstance(a, float) or isinstance(b, float):
+        if isinstance(a, int | float) and isinstance(b, int | float) and abs(a - b) <= tol:
+            return []
+        return [f"{path}: {a!r} != {b!r}"]
+    if isinstance(a, dict) and isinstance(b, dict):
+        out = []
+        for k in sorted(set(a) | set(b)):
+            out += diff_plain(a.get(k), b.get(k), f"{path}.{k}", tol)
+        return out
+    if isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return [f"{path}: len {len(a)} != {len(b)}"]
+        out = []
+        for i, (x, y) in enumerate(zip(a, b, strict=True)):
+            out += diff_plain(x, y, f"{path}[{i}]", tol)
+        return out
+    return [] if a == b else [f"{path}: {a!r} != {b!r}"]

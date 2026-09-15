@@ -582,3 +582,36 @@ G6 只要求已启用功能的适用 AT；Phase 0 结束时 R 相关 AT 应全�
 | 用户查看时机 | —— | 窗口内实时，加收盘后参考；勘误 E1 的 `CLOSING_REFERENCE` 因此是必需项 |
 
 对 SRD 的处理：不修改 SRD 1.3 正文。上述影响在 Phase 0 报告与 G0 决定中逐项引用本节。
+
+## 16 MVP 实现（2026-09-15）
+
+MVP 为 R 路径首版，验收见 [reports/mvp/acceptance.md](../reports/mvp/acceptance.md)。
+
+### 16.1 数据流
+
+```mermaid
+flowchart LR
+    RAW[(原始日志)] -->|启动时恢复最近 10 天| ST
+    HTTP[轮询：新浪 ETF 与净值] --> RAW
+    HTTP --> ST[RelativeState<br/>ingest]
+    ST -->|ETF 批次到达<br/>截止时刻 = received_at| B[RelativeBundle<br/>规范 JSON + SHA-256]
+    B --> EV[evaluate_bundle<br/>纯函数]
+    EV --> SS[(snapshots/relative<br/>只追加 JSONL)]
+    ST -->|请求时刻| PAGE[状态页首屏<br/>/relative.json]
+    SS --> RP[qdii replay relative<br/>输入包重算 / 流回放]
+    RAW --> RP
+```
+
+### 16.2 新增决策
+
+| ADR | 决策 | 理由 | 被放弃的方案 |
+|---|---|---|---|
+| 018 | MVP 的快照存储用按 UTC 日期分段的只追加 JSONL，每行包含完整输入包、结果与质量；SQLite 推迟到出现跨日查询需求时 | R 路径的输入只有 5 只 ETF 加净值；原始日志本身就是规范事实源；JSONL 天然只追加，方便回放校验，零迁移成本 | 按 §5.2 先建 SQLite 表 |
+| 019 | 在线与回放共用 `pipeline.relative_state.RelativeState`；输入包内嵌全部判定输入（价格、净值、时间、准入标志、差分边界、版本） | 流回放逐包比对 bundle_id，才能证明两条路径一致（2026-09-15 真实数据 1290/1290 一致） | 在线另写一条计算路径 |
+| 020 | 状态页首屏在请求时刻即时计算（窗口外自动变为收盘参考），且不写入快照；只有 ETF 批次触发的计算才持久化 | 已持久化的历史只包含真实触发时刻，回放可复现；首屏始终反映当前阶段 | 定时持久化首屏 |
+
+### 16.3 与原计划的差异
+
+- §5.2 的 SQLite 表未建立（ADR-018），规范化记录仍从原始日志即时重解析。
+- 净值三态在 `RelativeState` 中按修订检测实现，没有独立的 `nav_validation` 表。维护者人工复核的记录方式留待首次出现修订时再补。
+- 日历覆盖文件没有冲突校验，也不支持热加载，以停机重载代替（AT57/58 部分满足）。

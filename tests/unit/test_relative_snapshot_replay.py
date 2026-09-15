@@ -60,14 +60,14 @@ def setup(tmp_path):
 
 def test_break_uses_frozen_1130_snapshot(tmp_path):
     setup(tmp_path)
-    g, _ = build(tmp_path, REPO, bj(12, 0))
+    g = build(tmp_path, REPO, bj(12, 0))[0].result
     assert g.mode is RelativeMode.CLOSING_REFERENCE and g.status is RelativeStatus.MODEL_REFERENCE
     assert {str(m.price) for m in g.members} == {"2.210"}
 
 
 def test_current_uses_latest_ask_and_as_of_cutoff(tmp_path):
     setup(tmp_path)
-    g, _ = build(tmp_path, REPO, bj(14, 50))
+    g = build(tmp_path, REPO, bj(14, 50))[0].result
     assert g.mode is RelativeMode.CURRENT and g.price_basis == "ASK"
     assert next(m for m in g.members if m.code == "159660").price is not None
     assert all(str(m.price) in {"2.300", "2.400"} for m in g.members)  # 15:00 之后的快照不可见
@@ -75,12 +75,12 @@ def test_current_uses_latest_ask_and_as_of_cutoff(tmp_path):
 
 def test_after_close_uses_close_snapshot_not_late_one(tmp_path):
     setup(tmp_path)
-    g, _ = build(tmp_path, REPO, bj(16, 0))
+    g = build(tmp_path, REPO, bj(16, 0))[0].result
     assert {str(m.price) for m in g.members} == {"2.320"}
 
 
 def test_nav_not_yet_received_makes_group_ineligible(tmp_path):
     write(tmp_path, bj(14, 49, 58), "14:49:55", {c: "2.300" for c in CODES}, 3)
     write_nav(tmp_path, bj(20, 0), 100)  # 净值晚于截止时刻才收到
-    g, _ = build(tmp_path, REPO, bj(14, 50))
+    g = build(tmp_path, REPO, bj(14, 50))[0].result
     assert g.status is RelativeStatus.INELIGIBLE

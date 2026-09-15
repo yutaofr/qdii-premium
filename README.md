@@ -1,12 +1,14 @@
 # qdii-premium
 
-纳指100 QDII ETF 相对估值与溢价监测。当前阶段：**Phase 0**（数据源验证与原始录制）。
+纳指100 QDII ETF 相对估值与溢价监测。当前状态：**MVP（相对估值参考，R 路径）已实现并运行**；Phase 0 真实会话积累中。
+
+- MVP 验收：[reports/mvp/acceptance.md](reports/mvp/acceptance.md)
 
 - 需求与规范：[docs/spec/](docs/spec/)（SRD 1.3、DS/VM/QS 1.0）及 [勘误](docs/SRD_v1.3_errata.md)
 - 架构：[docs/ADD-0_Phase0_and_Core.md](docs/ADD-0_Phase0_and_Core.md)
 - Phase 0 证据：[reports/phase0/](reports/phase0/)
 
-## 当前已实现（ADD-0 §13 第 1 天）
+## 模块
 
 | 模块 | 内容 |
 |---|---|
@@ -26,7 +28,17 @@
 | `qdii.core.relative` | VM-10 相对比较：S、排名、成对 δ 与差分边界判断；共同锚点时不需要指数与汇率 |
 | `qdii.apps.relative_snapshot` | `qdii relative --at …`：按知识截止时刻在原始日志上回放；连续交易用卖一价，其余阶段为收盘参考（勘误 E1） |
 
-尚未实现：SQLite 规范化存储、Bundler 与统一 evaluate、绝对估值（E 路径）、状态页展示相对比较。
+| `qdii.core.relative_bundle` | 不可变输入包（规范 JSON + SHA-256）、`evaluate_bundle`、质量对象（QS-01~03）、确定性比较 |
+| `qdii.pipeline.relative_state` | 在线与回放共用的增量状态：as-of、净值修订隔离、因子组、收盘参考快照 |
+| `qdii.io.snapshot_store` | 相对比较快照只追加 JSONL（ADR-018） |
+| `qdii.apps.replay_relative` | `qdii replay relative`：输入包重算 / 流回放逐包比对 |
+
+未实现（MVP 范围外）：绝对估值（E/V 路径）、价格机会通知、基金公告监控、SQLite 规范化存储。
+
+## 使用
+
+- 首屏（本机）：`http://127.0.0.1:8787/`，数据接口 `/relative.json`、`/health.json`
+- 命令行：`uv run qdii relative`（当前）；`uv run qdii relative --at 2026-09-15T14:50:00+08:00`（任意历史时刻）
 
 ## Phase 0 证据
 
@@ -57,9 +69,10 @@ uv run qdii events --tail 30                                              # 启�
 uv run qdii unblock sina.etf_batch                                        # 确认后解除 403/429 封禁
 uv run qdii relative                                                      # 当前相对比较（非交易时段自动给收盘参考）
 uv run qdii relative --at 2026-09-15T14:50:00+08:00 --json                # 回放任意历史时刻
+uv run qdii replay relative --date 2026-09-15 --stream                     # 确定性回放校验
 uv run qdii research fetch-history --since 2025-01-01                     # 历史数据 → ~/qdii-data/research
 uv run qdii research nav-fx                                               # 从原始日志重解析并生成 PH0-07 报告
 uv run --group research qdii research fund-rules                          # PH0-06：招募说明书下载到仓库外并提取条款
 ```
 
-数据目录 `~/qdii-data`：`raw/`（原始日志）、`events/collector.jsonl`、`state/heartbeat.json`、`state/blocked.json`、`logs/`。
+数据目录 `~/qdii-data`：`raw/`（原始日志）、`snapshots/relative/`（相对比较快照）、`events/collector.jsonl`、`state/heartbeat.json`、`state/blocked.json`、`logs/`。

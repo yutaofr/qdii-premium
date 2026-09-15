@@ -31,6 +31,56 @@ def _fmt(utc_ns: int | None) -> str:
     return f"{bj} 北京 / {local}"
 
 
+MODE_CN = {"CURRENT": "当前比较（连续交易，按卖一价，买入口径）", "CLOSING_REFERENCE": "收盘/午间参考（按最新价/收盘价，不代表当前可交易）"}
+PAIR_CN = {"ROBUST_DIFFERENCE": "差异明确", "UNRESOLVED": "差异未能区分", "MODEL_REFERENCE": "模型参考（差分未校准）"}
+FRESH_CN = {"CURRENT": "新", "RECENT": "较新", "AGING": "变旧", "STALE": "过期", "UNKNOWN": "未知", "NOT_APPLICABLE": "—"}
+
+
+def _pct(x: float | None, digits: int = 2) -> str:
+    return "—" if x is None else f"{x * 100:+.{digits}f}%"
+
+
+def render_relative(rel: dict[str, Any] | None) -> str:
+    """首屏（SRD §4、FR02/FR03/FR12）：排名、卖一及可见数量、相对价差与判断、净值日期；技术细节折叠在详情中。"""
+    e = html.escape
+    if not rel:
+        return "<h2>相对比较</h2><p>未启用（缺少基金配置）。</p>"
+    if "error" in rel:
+        return f"<h2>相对比较</h2><p class='bad'>计算失败：{e(rel['error'])}</p>"
+    q = rel["quality"]
+    rows = []
+    for r in rel["rows"]:
+        nxt = r.get("to_next")
+        judge = (f"比 {e(nxt['next'])} 便宜 {abs(nxt['delta']) * 100:.2f}%（{PAIR_CN.get(nxt['status'], nxt['status'])}）"
+                 if nxt else ("—" if r["eligible"] else "未参与比较"))
+        premium = r["nav_premium"]
+        prem_txt = "—" if premium is None else (f"溢价 {premium * 100:.2f}%" if premium >= 0 else f"折价 {-premium * 100:.2f}%")
+        age_txt = "—" if r["age_s"] is None else f"{r['age_s']:.0f}s"
+        details = (f"<details><summary>详情</summary><div class='small'>"
+                   f"单位净值 {e(str(r['nav']))}（{e(str(r['nav_date']))}）；快照时间 {_fmt(r['quote_time_utc_ns'])}；"
+                   f"年龄 {age_txt}；"
+                   f"原因 {e(', '.join(r['reasons']) or '无')}；行情消息 {e(str(r['snapshot_msg_id']))}；"
+                   f"净值消息 {e(str(r['nav_msg_id']))}</div></details>")
+        rows.append(
+            f"<tr class='{'' if r['eligible'] else 'muted'}'><td>{r['rank'] or '—'}</td>"
+            f"<td><b>{e(r['code'])}</b><br><span class='small'>{e(r['name'])}</span></td>"
+            f"<td>{e(str(r['price'] or '—'))}<br><span class='small'>{e(str(r['volume'] or ''))}</span></td>"
+            f"<td>{_pct(r['rel_to_best'])}</td><td>{judge}</td><td>{prem_txt}</td>"
+            f"<td>{e(str(r['nav_date'] or '—'))}</td><td>{FRESH_CN.get(r['freshness'], r['freshness'])}</td>"
+            f"<td>{details}</td></tr>")
+    reasons = ", ".join(rel["reasons"]) or "无"
+    return f"""<h2>相对比较 · {e(MODE_CN.get(rel['mode'], rel['mode']))}</h2>
+<p>知识截止 {_fmt(rel['cutoff_utc_ns'])}；快照 {_fmt(rel['tau_utc_ns'])}；比较状态 <b>{e(rel['status'])}</b>；
+锚点距今 {rel['sessions_since_anchor']} 个交易日（{e(q['anchor_health'])}）；机会提醒 {'允许' if rel['opportunity_alert_allowed'] else '关闭'}</p>
+<div class="wrap"><table>
+<tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>相对最便宜</th><th>与下一名</th>
+<th>官方净值对照</th><th>净值日</th><th>新鲜度</th><th></th></tr>{''.join(rows)}</table></div>
+<p class="small">相对价差 = (价格/单位净值) 之比 − 1，不是绝对溢价百分点；"官方净值对照"用的是已披露的旧净值，不是估算净值。
+模型 M0 满仓假设（{e(q['provenance_confidence'])}，{e(q['model_status'])}）；延迟 {e(q['delay_status'])}；原因 {e(reasons)}。</p>
+<details><summary>输入包与版本</summary><div class="small">bundle_id {e(rel['bundle_id'])}<br>
+{e(json.dumps(rel['versions'], ensure_ascii=False))}<br>{e(', '.join(rel['notes']))}</div></details>"""
+
+
 def render_html(snap: dict[str, Any]) -> str:
     e = html.escape
     warn = "".join(f"<li>{e(w)}</li>" for w in snap["warnings"]) or "<li>无</li>"
@@ -64,11 +114,14 @@ def render_html(snap: dict[str, Any]) -> str:
     )
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="15">
-<title>QDII 采集状态</title>
+<title>纳指100 QDII ETF 相对比较</title>
 <style>body{{font:14px -apple-system,sans-serif;margin:16px;color:#222}}table{{border-collapse:collapse;margin:8px 0 20px}}
 td,th{{border:1px solid #ddd;padding:4px 8px;text-align:left;white-space:nowrap}}th{{background:#f4f4f4}}
-.bad td{{background:#fff1f0}}.wrap{{overflow-x:auto}}h2{{font-size:16px;margin-top:20px}}</style></head><body>
-<h1 style="font-size:18px">QDII 采集状态</h1>
+.bad td{{background:#fff1f0}}.wrap{{overflow-x:auto}}h2{{font-size:16px;margin-top:20px}}
+.small{{font-size:12px;color:#666;white-space:normal}}.muted td{{color:#999}}details{{white-space:normal}}</style></head><body>
+<h1 style="font-size:18px">纳指100 QDII ETF 相对比较</h1>
+{render_relative(snap.get('relative'))}
+<h2>采集状态</h2>
 <p>运行 {e(snap['run_id'])}；启动 {_fmt(snap['started_utc_ns'])}；心跳 {_fmt(snap['last_heartbeat_utc_ns'])}</p>
 <p>采集窗口：{'进行中' if snap['window']['active'] else '未开'}；
 {_fmt(snap['window'].get('start_utc_ns'))} → {_fmt(snap['window'].get('end_utc_ns'))}</p>
@@ -144,6 +197,9 @@ def _handler(snapshot: Callable[[], dict[str, Any]], allowed: ipaddress.IPv4Netw
                 await _respond(writer, 405, "text/plain", b"method not allowed")
             elif request_line[1] == "/health.json":
                 body = json.dumps(snapshot(), ensure_ascii=False, default=str).encode()
+                await _respond(writer, 200, "application/json; charset=utf-8", body)
+            elif request_line[1] == "/relative.json":
+                body = json.dumps(snapshot().get("relative"), ensure_ascii=False, default=str).encode()
                 await _respond(writer, 200, "application/json; charset=utf-8", body)
             elif request_line[1] == "/":
                 await _respond(writer, 200, "text/html; charset=utf-8", render_html(snapshot()).encode())

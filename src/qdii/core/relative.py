@@ -141,7 +141,8 @@ def evaluate_relative(
             r.append(ReasonCode.FUTURE_TIMESTAMP)
 
     hard = {ReasonCode.QUOTE_MISSING, ReasonCode.NAV_MISSING, ReasonCode.PENDING_VERIFY, ReasonCode.NONSEPARABLE_EVENT,
-            ReasonCode.SESSION_BOUNDARY, ReasonCode.TIME_UNVERIFIED, ReasonCode.TIME_SKEW, ReasonCode.FUTURE_TIMESTAMP}
+            ReasonCode.SESSION_BOUNDARY, ReasonCode.TIME_UNVERIFIED, ReasonCode.TIME_SKEW, ReasonCode.FUTURE_TIMESTAMP,
+            ReasonCode.NAV_FX_RULE_UNKNOWN, ReasonCode.CORPORATE_ACTION_PENDING, ReasonCode.FACTOR_GROUP_MISMATCH}  # QS-01：X₀ 未知时默认相对比较不可用
     ok = [m for m in members if not (set(reasons[m.code]) & hard)]
 
     # 2) 共同时点 τ 与跨度（QS-02）：以最新快照为 τ，跨度超限者退出

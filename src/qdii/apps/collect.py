@@ -1,8 +1,9 @@
-"""采集守护进程（ADD-0 §4.1、§15）：只录制原始报文、维护状态，不写 SQLite。
+"""采集守护进程（ADD-0 §4.1、§15、§16）：录制原始报文、维护状态，并在线生成相对比较快照（MVP）。
 
 主机可用窗口（HostWindow）之外不发任何请求、不持有防睡眠断言，主机可以正常睡眠；
 窗口外的缺口记为 OFF_WINDOW_GAP，窗口内的缺口才是 COLLECTOR_GAP。
-解析器在线上只用于状态页展示；规范化记录落库留给后续（原始日志可随时重解析）。
+每批新浪 ETF 行情到达时，以该消息 received_at 为知识截止构建不可变输入包并计算相对比较（ADR-010），
+快照只追加写入 snapshots/relative/（ADR-018）；状态页首屏按请求时刻即时计算（窗口外为收盘参考）。
 """
 
 from __future__ import annotations
@@ -24,12 +25,16 @@ from pathlib import Path
 import httpx
 
 from qdii.apps.health import EventLog, Health
+from qdii.apps.relative_snapshot import new_state, relevant, replay_into, view
 from qdii.apps.status import serve_status
 from qdii.contracts.registry import get_parser
+from qdii.core.relative_bundle import canonical_json, evaluate_bundle, snapshot_to_dict
 from qdii.core.types import ClockStatus, RawMessage
 from qdii.io import host, rawlog
 from qdii.io.clock import Clock, SystemClock
 from qdii.io.http import BlockList, EndpointState, Fetcher
+from qdii.io.snapshot_store import SnapshotStore
+from qdii.pipeline.relative_state import ETF_ENDPOINT, RelativeState
 from qdii.pipeline.sources import EndpointConfig, load_sources
 from qdii.pipeline.windows import WEEKDAYS, HostWindow, parse_hhmm
 
@@ -53,6 +58,7 @@ class CollectorConfig:
     status_port: int
     status_lan_enabled: bool = False
     host_window: HostWindow | None = None  # None = 全天可用
+    host_probe_enabled: bool = True
 
 
 def load_collector_config(path: Path, data_root_override: Path | None = None) -> CollectorConfig:
@@ -87,7 +93,8 @@ class DiskFull(RuntimeError):
 
 class Collector:
     def __init__(self, cfg: CollectorConfig, endpoints: list[EndpointConfig], timeout_s: float,
-                 clock: Clock | None = None) -> None:
+                 clock: Clock | None = None, repo_root: Path | None = None,
+                 transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.cfg = cfg
         self.endpoints = [ep for ep in endpoints if ep.enabled]
         self.timeout_s = timeout_s
@@ -112,6 +119,13 @@ class Collector:
         self.fetcher: Fetcher | None = None
         self.caffeinate: subprocess.Popen[bytes] | None = None
         self.exit_code = 0
+        self.transport = transport
+        self.relative: RelativeState | None = None
+        self.names: dict[str, str] = {}
+        if repo_root is not None and (repo_root / "config" / "funds.toml").exists():
+            self.relative = new_state(repo_root)
+            self.names = {f.code: f.name for f in self.relative.funds}
+        self.snapshots = SnapshotStore(root)
 
     # ---------- 生命周期 ----------
 
@@ -122,6 +136,9 @@ class Collector:
         for fix in rawlog.recover(root, now_utc_ns=now):
             self.events.emit("TAIL_REPAIR", path=str(fix.path), truncated_bytes=fix.truncated_bytes)
         self.writer = rawlog.RawLogWriter(root)
+        if self.relative is not None:
+            n = await asyncio.to_thread(replay_into, self.relative, root, now)
+            self.events.emit("RELATIVE_BOOTSTRAP", messages=n)
         self.events.emit("START", run_id=self.run_id, pid=os.getpid(),
                          endpoints=[ep.request.endpoint_id for ep in self.endpoints])
 
@@ -132,7 +149,7 @@ class Collector:
         limits = httpx.Limits(max_connections=8, max_keepalive_connections=4)
         # 跟随重定向（浏览器正常访问行为），最终 URL 与跳转链写入原始消息；不读取环境代理，保证访问路径固定
         async with httpx.AsyncClient(timeout=self.timeout_s, follow_redirects=True, max_redirects=5,
-                                     limits=limits, trust_env=False) as client:
+                                     limits=limits, trust_env=False, transport=self.transport) as client:
             self.fetcher = Fetcher(client, self.clock, self.run_id)
             tasks = [asyncio.create_task(self._window_manager(), name="window")]
             tasks += [asyncio.create_task(self._poll(ep), name=ep.request.endpoint_id) for ep in self.endpoints]
@@ -140,7 +157,7 @@ class Collector:
             tasks.append(asyncio.create_task(self._host_probe(), name="host_probe"))
             if self.cfg.status_enabled:
                 tasks.append(asyncio.create_task(serve_status(
-                    lambda: self.health.snapshot(self.clock.now_utc_ns()),
+                    self._status_snapshot,
                     interface=self.cfg.status_interface, port=self.cfg.status_port, stop=self.stop,
                     lan_enabled=self.cfg.status_lan_enabled,
                 ), name="status"))
@@ -237,6 +254,7 @@ class Collector:
                     self.events.emit("ENDPOINT_BLOCKED", endpoint=req.endpoint_id, reason=state.blocked_reason)
                 if parser is not None and msg.status == 200:
                     self.health.absorb_parse(parser(msg))
+                self._on_relative_input(msg)
                 delay = max(interval, state.backoff_s())
                 await self._sleep_until_next(started, delay)
         except DiskFull:
@@ -257,6 +275,38 @@ class Collector:
             if remaining <= 0 or not self._in_window(self.clock.now_utc_ns()):
                 return
             await self._sleep(min(remaining, MAX_WAIT_S))
+
+    # ---------- 相对比较（MVP） ----------
+
+    def _on_relative_input(self, msg: RawMessage) -> None:
+        if self.relative is None or not relevant(msg.endpoint_id):
+            return
+        self.relative.ingest(msg)
+        if msg.endpoint_id != ETF_ENDPOINT or msg.status != 200:
+            return
+        try:
+            bundle = self.relative.bundle(msg.received_utc_ns)  # ADR-010：知识截止 = 触发消息的 received_at
+            snap = evaluate_bundle(bundle)
+            self.snapshots.append(canonical_json(bundle), snapshot_to_dict(snap), self.clock.now_utc_ns())
+            self.health.relative_last_bundle_id = snap.bundle_id
+            self.health.relative_snapshots += 1
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                self.events.emit("DISK_FULL", error=str(exc))
+                raise DiskFull from exc
+            raise
+
+    def _status_snapshot(self) -> dict:
+        now = self.clock.now_utc_ns()
+        snap = self.health.snapshot(now)
+        if self.relative is not None:
+            try:
+                bundle = self.relative.bundle(now)
+                snap["relative"] = view(evaluate_bundle(bundle), bundle, self.names)
+            except Exception as exc:  # 状态页计算失败不影响采集，但必须留下记录
+                log.exception("relative view failed")
+                snap["relative"] = {"error": repr(exc)}
+        return snap
 
     def _write(self, msg: RawMessage) -> None:
         assert self.writer is not None
@@ -315,6 +365,9 @@ class Collector:
     # ---------- 主机探测（仅窗口内） ----------
 
     async def _host_probe(self) -> None:
+        if not self.cfg.host_probe_enabled:
+            await self.stop.wait()  # 禁用时保持存活：提前返回会被 _on_task_done 视为任务崩溃
+            return
         last_power: str | None = None
         while not self.stop.is_set():
             if not await self._wait_window():
@@ -364,4 +417,4 @@ def main(config_dir: Path, data_root: Path | None = None) -> int:
     cfg = load_collector_config(config_dir / "collector.toml", data_root)
     _, timeout_s, endpoints = load_sources(config_dir / "sources.toml")
     setup_logging(cfg.data_root)
-    return asyncio.run(Collector(cfg, endpoints, timeout_s).run())
+    return asyncio.run(Collector(cfg, endpoints, timeout_s, repo_root=config_dir.parent).run())
