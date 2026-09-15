@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import math
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from qdii.contracts import eastmoney_lsjz_v1, sina_a_share_v1
+from qdii.contracts import chinamoney_ccpr_his_v1, eastmoney_lsjz_v1, index_history_v1, sina_a_share_v1
 from qdii.core.relative import RelativeMode, RelativePolicy
 from qdii.core.relative_bundle import SCHEMA_VERSION, MemberSpec, RelativeBundle
 from qdii.core.types import (
+    FxFixing,
+    IndexClose,
     MarketQuote,
     NavObservation,
     PriceType,
@@ -35,6 +37,15 @@ NAV_ROUNDING_BP = 0.5
 GROWTH_TOLERANCE = 0.0002
 ETF_ENDPOINT = "sina.etf_batch"
 NAV_ENDPOINT_PREFIX = "eastmoney.lsjz."
+INDEX_ENDPOINT = "nasdaq.ndx_history"  # 跨日归一化因子 I(a)（评审 R4）
+FIXING_ENDPOINT = "chinamoney.ccpr"  # 跨日归一化因子 X0（L0_FX_T）
+FACTOR_ENDPOINTS = frozenset({INDEX_ENDPOINT, FIXING_ENDPOINT})
+CONTRACTS = (sina_a_share_v1.CONTRACT_VERSION, eastmoney_lsjz_v1.CONTRACT_VERSION,
+             index_history_v1.NASDAQ_VERSION, chinamoney_ccpr_his_v1.CONTRACT_VERSION)
+
+
+def is_relative_input(endpoint_id: str) -> bool:
+    return endpoint_id in (ETF_ENDPOINT, *FACTOR_ENDPOINTS) or endpoint_id.startswith(NAV_ENDPOINT_PREFIX)
 
 
 @dataclass(frozen=True)
@@ -72,20 +83,35 @@ def is_reference_snapshot(cal: CalendarProvider, provider_ns: int) -> bool:
     return False
 
 
-@dataclass
-class _Snapshot:
-    msg_id: str
+@dataclass(frozen=True)
+class _Quote:
+    """单只基金的一条市场快照（按供应商快照时间判断新旧，评审 R3）。"""
+
+    t: int
     received_utc_ns: int
-    rows: dict[str, dict]
-    provider_max_ns: int | None
+    msg_id: str
+    last: Decimal | None
+    ask: Decimal | None
+    ask_volume: Decimal | None
+
+    def newer_than(self, other: _Quote | None) -> bool:
+        if other is None:
+            return True
+        return (self.t, self.received_utc_ns) > (other.t, other.received_utc_ns)
 
 
-@dataclass
+@dataclass(frozen=True)
 class _NavValue:
+    """同一净值日的一条完整经济事实；任一字段不同即为新证据（评审 R2）。"""
+
     unit_nav: Decimal
+    cum_nav: Decimal | None
     growth_pct: Decimal | None
     event_fields: tuple[tuple[str, str], ...]
     msg_id: str
+
+    def fact(self) -> tuple:
+        return (self.unit_nav, self.cum_nav, self.growth_pct, self.event_fields)
 
 
 @dataclass
@@ -95,36 +121,53 @@ class RelativeState:
     udiff: dict | None = None
     policy: RelativePolicy = field(default_factory=RelativePolicy)
     factor_group: str = "NDX_USD_UNHEDGED"  # VM-10：只在同一因子组内比较
-    latest: _Snapshot | None = None
-    reference: _Snapshot | None = None
+    latest: dict[str, _Quote] = field(default_factory=dict)  # symbol → 最新市场快照
+    reference: dict[str, _Quote] = field(default_factory=dict)  # symbol → 最新可作收盘参考的快照
+    stale_rejected: int = 0  # 较旧行情被拒绝的次数（审计）
     navs: dict[str, dict[date, list[_NavValue]]] = field(default_factory=dict)
+    index_closes: dict[date, dict[Decimal, str]] = field(default_factory=dict)  # 日期 → {数值: msg_id}
+    fixings: dict[date, dict[Decimal, str]] = field(default_factory=dict)
     last_received_utc_ns: int = 0
 
     # ---------- ingest ----------
 
     def ingest(self, msg: RawMessage) -> bool:
-        """返回是否被相对比较使用。乱序（早于已处理时刻）的消息保留审计但不倒退当前快照（QS-02）。"""
+        """返回是否被相对比较使用。原始消息全部保留在原始日志中；这里只维护当前有效输入。"""
         if msg.status != 200:
             return False
+        self.last_received_utc_ns = max(self.last_received_utc_ns, msg.received_utc_ns)
         if msg.endpoint_id == ETF_ENDPOINT:
-            snap = self._parse_etf(msg)
-            if msg.received_utc_ns >= self.last_received_utc_ns:
-                self.latest = snap
-                if snap.provider_max_ns is not None and is_reference_snapshot(self.cal, snap.provider_max_ns):
-                    self.reference = snap
-                self.last_received_utc_ns = msg.received_utc_ns
+            for symbol, quote in self._parse_etf(msg).items():
+                # 评审 R3：按成员比较供应商快照时间，较旧行情（即使接收更晚）不得覆盖；缺失成员保留原值
+                if quote.newer_than(self.latest.get(symbol)):
+                    self.latest[symbol] = quote
+                else:
+                    self.stale_rejected += 1
+                if is_reference_snapshot(self.cal, quote.t) and quote.newer_than(self.reference.get(symbol)):
+                    self.reference[symbol] = quote
             return True
         if msg.endpoint_id.startswith(NAV_ENDPOINT_PREFIX):
             for rec in eastmoney_lsjz_v1.parse(msg).records:
                 if isinstance(rec, NavObservation) and rec.unit_nav is not None:
                     values = self.navs.setdefault(rec.code, {}).setdefault(rec.nav_date, [])
-                    if all(v.unit_nav != rec.unit_nav for v in values):  # 重复报文不新增修订（AT50）
-                        values.append(_NavValue(rec.unit_nav, rec.growth_pct, rec.event_fields, msg.msg_id))
+                    value = _NavValue(rec.unit_nav, rec.cum_nav, rec.growth_pct, rec.event_fields, msg.msg_id)
+                    if all(v.fact() != value.fact() for v in values):  # 完全相同的事实才算重复（AT50）
+                        values.append(value)
+            return True
+        if msg.endpoint_id == INDEX_ENDPOINT:
+            for rec in index_history_v1.parse_nasdaq(msg).records:
+                if isinstance(rec, IndexClose) and rec.close is not None:
+                    self.index_closes.setdefault(rec.trade_date, {}).setdefault(rec.close, msg.msg_id)
+            return True
+        if msg.endpoint_id == FIXING_ENDPOINT:
+            for rec in chinamoney_ccpr_his_v1.parse(msg).records:
+                if isinstance(rec, FxFixing) and rec.rate is not None and rec.pair == "USD/CNY":
+                    self.fixings.setdefault(rec.publish_date, {}).setdefault(rec.rate, msg.msg_id)
             return True
         return False
 
     @staticmethod
-    def _parse_etf(msg: RawMessage) -> _Snapshot:
+    def _parse_etf(msg: RawMessage) -> dict[str, _Quote]:
         rows: dict[str, dict] = {}
         for rec in sina_a_share_v1.parse(msg).records:
             row = rows.setdefault(rec.symbol, {})
@@ -133,8 +176,10 @@ class RelativeState:
             elif isinstance(rec, QuoteSide) and rec.side is Side.ASK:
                 valid = rec.state is SideState.VALID
                 row["ask"], row["ask_volume"] = (rec.price, rec.volume) if valid else (None, None)
-        ts = [r["t"] for r in rows.values() if r.get("t")]
-        return _Snapshot(msg.msg_id, msg.received_utc_ns, rows, max(ts) if ts else None)
+        return {
+            symbol: _Quote(r["t"], msg.received_utc_ns, msg.msg_id, r.get("last"), r.get("ask"), r.get("ask_volume"))
+            for symbol, r in rows.items() if r.get("t") is not None  # 无法判断时间的行情不进入比较
+        }
 
     # ---------- 净值选择（QS-05 首版三态：自动普通校验 / 待复核隔离） ----------
 
@@ -147,20 +192,31 @@ class RelativeState:
         values = by_date[d]
         latest = values[-1]
         reasons: list[str] = []
-        verified = True
-        if len(values) > 1:  # 同一净值日出现不同数值：修订，隔离直至复核（AT46）
-            verified = False
-            reasons.append(ReasonCode.PENDING_VERIFY.value)
-        if latest.event_fields:
-            verified = False
-            reasons.append(ReasonCode.CORPORATE_ACTION_PENDING.value)
-        if verified and len(dates) >= 2 and latest.growth_pct is not None:
+        if len({v.unit_nav for v in values}) > 1 or len({v.growth_pct for v in values if v.growth_pct is not None}) > 1:
+            reasons.append(ReasonCode.PENDING_VERIFY.value)  # 同日数值或增长率被修订（AT46）
+        if any(v.event_fields for v in values):
+            reasons.append(ReasonCode.CORPORATE_ACTION_PENDING.value)  # 后补事件字段同样隔离（评审 R2）
+        if not reasons and len(dates) >= 2 and latest.growth_pct is not None:
             prev = by_date[dates[-2]][-1].unit_nav
             implied = float(latest.unit_nav) / float(prev) - 1
             if abs(implied - float(latest.growth_pct) / 100) > GROWTH_TOLERANCE:
-                verified = False
                 reasons.append(ReasonCode.PENDING_VERIFY.value)
-        return latest, d, verified, tuple(dict.fromkeys(reasons))
+        return latest, d, not reasons, tuple(dict.fromkeys(reasons))
+
+    @staticmethod
+    def _unambiguous(values: dict[Decimal, str] | None) -> tuple[Decimal, str] | None:
+        if not values or len(values) != 1:
+            return None  # 缺失或同日多个不同数值：不提供因子
+        return next(iter(values.items()))
+
+    def _anchor_factors(self, nav_date: date) -> tuple[Decimal | None, Decimal | None, tuple[str, ...]]:
+        """L0_FX_T：I(a) = 不晚于净值日的最近 NDX 收盘；X0 = 净值日当日中间价。"""
+        idx_dates = [d for d in self.index_closes if d <= nav_date]
+        idx = self._unambiguous(self.index_closes[max(idx_dates)]) if idx_dates else None
+        fx = self._unambiguous(self.fixings.get(nav_date))
+        if idx is None or fx is None:
+            return None, None, ()
+        return idx[0], fx[0], (idx[1], fx[1])
 
     # ---------- 输入包 ----------
 
@@ -169,20 +225,17 @@ class RelativeState:
         phase, _, covered = self.cal.phase("SSE", cutoff_utc_ns)
         mode = RelativeMode.CURRENT if phase is MarketPhase.CONTINUOUS else RelativeMode.CLOSING_REFERENCE
         notes: list[str] = [f"cutoff_phase={phase.value}"]
-        if not covered:
-            notes.append(ReasonCode.CALENDAR_UNCERTAIN.value)
-        if mode is RelativeMode.CURRENT:
-            snap, basis = self.latest, basis or "ASK"
-        else:
-            snap, basis = self.reference, basis or "LAST"
+        quotes = self.latest if mode is RelativeMode.CURRENT else self.reference
+        basis = basis or ("ASK" if mode is RelativeMode.CURRENT else "LAST")
 
         members: list[MemberSpec] = []
         nav_dates: list[date] = []
         for f in self.funds:
-            row = (snap.rows.get(f.symbol, {}) if snap else {})
-            price = row.get("ask") if basis == "ASK" else row.get("last")
-            volume = row.get("ask_volume") if basis == "ASK" else None
-            t = row.get("t")
+            q = quotes.get(f.symbol)
+            last_q = self.latest.get(f.symbol) if mode is RelativeMode.CURRENT else q
+            price = (q.ask if basis == "ASK" else q.last) if q else None
+            volume = q.ask_volume if (q and basis == "ASK") else None
+            t = q.t if q else None
             if t is None:
                 phase_ok = False
             elif mode is RelativeMode.CURRENT:
@@ -190,8 +243,11 @@ class RelativeState:
             else:
                 phase_ok = is_reference_snapshot(self.cal, t)
             nav, nav_date, verified, reasons = self._nav_for(f.code)
+            idx = fx = None
+            factor_ids: tuple[str, ...] = ()
             if nav_date:
                 nav_dates.append(nav_date)
+                idx, fx, factor_ids = self._anchor_factors(nav_date)
             if f.nav_fx_rule_status != "VERIFIED":
                 reasons = (*reasons, ReasonCode.NAV_FX_RULE_UNKNOWN.value)
             if f.factor_group != self.factor_group:  # AT69：不同因子组不混排
@@ -206,26 +262,34 @@ class RelativeState:
                 nav_date=nav_date.isoformat() if nav_date else None,
                 nav_verified=verified,
                 nav_reasons=reasons,
-                snapshot_msg_id=snap.msg_id if snap else None,
+                snapshot_msg_id=q.msg_id if q else None,
                 nav_msg_id=nav.msg_id if nav else None,
+                last_price=str(last_q.last) if last_q and last_q.last is not None else None,
+                index_at_anchor=str(idx) if idx is not None else None,
+                fx_at_anchor=str(fx) if fx is not None else None,
+                anchor_factor_msg_ids=factor_ids,
             ))
 
+        today = datetime.fromtimestamp(cutoff_utc_ns / 1e9, tz=SHANGHAI).date()
+        # 评审 R6：日历未覆盖截止日或锚点日时不查询交易日区间，结果以 CALENDAR_UNCERTAIN 降级
+        covered = covered and all(self.cal.covers("SSE", d) for d in nav_dates)
+        if not covered:
+            notes.append(ReasonCode.CALENDAR_UNCERTAIN.value)
         sessions = None
-        bounds: list[tuple[str, str, float, str]] = []
-        if nav_dates:
-            today = datetime.fromtimestamp(cutoff_utc_ns / 1e9, tz=SHANGHAI).date()
+        bounds: list[tuple[str, str, float, float, str]] = []
+        if nav_dates and covered:
             sessions = len(self.cal.sessions_between("SSE", min(nav_dates), today))
             if self.udiff:
                 k = max(1, sessions)
                 for key, v in sorted(self.udiff["pairs"].items()):
                     i, j = sorted(key.split("|"))
-                    u_bp = v["p95_bp"] * math.sqrt(k) + NAV_ROUNDING_BP
-                    bounds.append((i, j, u_bp / 1e4, f"{self.udiff['run_id']} P95×√{k}+{NAV_ROUNDING_BP}bp"))
+                    bounds.append((i, j, v["p95_bp"] * math.sqrt(k), NAV_ROUNDING_BP,
+                                   f"{self.udiff['run_id']} 日终差分P95×√{k}（历史情景，未经盘中实测）"))
 
         all_versions = {
             "calendar": self.cal.version,
             "tzdb": self.cal.tzdb_version,
-            "contracts": f"{sina_a_share_v1.CONTRACT_VERSION},{eastmoney_lsjz_v1.CONTRACT_VERSION}",
+            "contracts": ",".join(CONTRACTS),
             "udiff": self.udiff["run_id"] if self.udiff else "none",
             "nav_fx_rules": ",".join(f"{f.code}:{f.nav_fx_rule}:{f.nav_fx_rule_status}" for f in self.funds),
             "factor_group": self.factor_group,
@@ -233,7 +297,7 @@ class RelativeState:
         }
         return RelativeBundle(
             schema=SCHEMA_VERSION, cutoff_utc_ns=cutoff_utc_ns, mode=mode.value, price_basis=basis,
-            policy_version=self.policy.version, max_age_s=self.policy.max_age_s, max_span_s=self.policy.max_span_s,
+            policy=tuple(sorted(asdict(self.policy).items())), calendar_covered=covered,
             sessions_since_anchor=sessions, model_status="HISTORICAL_VALIDATED",
             members=tuple(members), bounds=tuple(bounds), versions=tuple(sorted(all_versions.items())),
             notes=tuple(notes),

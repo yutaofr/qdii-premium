@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from qdii.apps.relative_snapshot import pair_text
 from qdii.io import host
 
 log = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ def _fmt(utc_ns: int | None) -> str:
 
 
 MODE_CN = {"CURRENT": "当前比较（连续交易，按卖一价，买入口径）", "CLOSING_REFERENCE": "收盘/午间参考（按最新价/收盘价，不代表当前可交易）"}
-PAIR_CN = {"ROBUST_DIFFERENCE": "差异明确", "UNRESOLVED": "差异未能区分", "MODEL_REFERENCE": "模型参考（差分未校准）"}
+PAIR_CN = {"ROBUST_DIFFERENCE": "超出情景边界", "UNRESOLVED": "未能区分", "MODEL_REFERENCE": "仅模型参考"}
 FRESH_CN = {"CURRENT": "新", "RECENT": "较新", "AGING": "变旧", "STALE": "过期", "UNKNOWN": "未知", "NOT_APPLICABLE": "—"}
 
 
@@ -51,10 +52,12 @@ def render_relative(rel: dict[str, Any] | None) -> str:
     rows = []
     for r in rel["rows"]:
         nxt = r.get("to_next")
-        judge = (f"比 {e(nxt['next'])} 便宜 {abs(nxt['delta']) * 100:.2f}%（{PAIR_CN.get(nxt['status'], nxt['status'])}）"
+        judge = (f"比 {e(nxt['next'])} 便宜 {abs(nxt['delta']) * 100:.2f}%：<b>{PAIR_CN.get(nxt['status'], nxt['status'])}</b>"
+                 f"<br><span class='small'>{e(pair_text(nxt))}</span>"
                  if nxt else ("—" if r["eligible"] else "未参与比较"))
         premium = r["nav_premium"]
         prem_txt = "—" if premium is None else (f"溢价 {premium * 100:.2f}%" if premium >= 0 else f"折价 {-premium * 100:.2f}%")
+        prem_txt += f"<br><span class='small'>最新价 {e(str(r['last_price'] or '—'))}</span>"
         age_txt = "—" if r["age_s"] is None else f"{r['age_s']:.0f}s"
         details = (f"<details><summary>详情</summary><div class='small'>"
                    f"单位净值 {e(str(r['nav']))}（{e(str(r['nav_date']))}）；快照时间 {_fmt(r['quote_time_utc_ns'])}；"
@@ -69,15 +72,22 @@ def render_relative(rel: dict[str, Any] | None) -> str:
             f"<td>{e(str(r['nav_date'] or '—'))}</td><td>{FRESH_CN.get(r['freshness'], r['freshness'])}</td>"
             f"<td>{details}</td></tr>")
     reasons = ", ".join(rel["reasons"]) or "无"
+    persisted = ("本页输入包按请求时刻即时生成，<b>未写入快照库</b>；"
+                 f"<a href='/relative/bundle.json'>下载本页完整输入包</a>（含成对边界与来源），"
+                 f"或用 <code>qdii relative --save</code> 保存决策快照。最近持久化快照："
+                 f"{e(str(rel.get('last_persisted_bundle_id') or '无'))}")
     return f"""<h2>相对比较 · {e(MODE_CN.get(rel['mode'], rel['mode']))}</h2>
+<p class="notice">{e(rel['scope_notice'])}</p>
 <p>知识截止 {_fmt(rel['cutoff_utc_ns'])}；快照 {_fmt(rel['tau_utc_ns'])}；比较状态 <b>{e(rel['status'])}</b>；
 锚点距今 {rel['sessions_since_anchor']} 个交易日（{e(q['anchor_health'])}）；机会提醒 {'允许' if rel['opportunity_alert_allowed'] else '关闭'}</p>
 <div class="wrap"><table>
 <tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>相对最便宜</th><th>与下一名</th>
-<th>官方净值对照</th><th>净值日</th><th>新鲜度</th><th></th></tr>{''.join(rows)}</table></div>
+<th>官方净值对照<br><span class='small'>最新价/已披露净值</span></th><th>净值日</th><th>新鲜度</th><th></th></tr>{''.join(rows)}</table></div>
 <p class="small">相对价差 = (价格/单位净值) 之比 − 1，不是绝对溢价百分点；"官方净值对照"用的是已披露的旧净值，不是估算净值。
 模型 M0 满仓假设（{e(q['provenance_confidence'])}，{e(q['model_status'])}）；延迟 {e(q['delay_status'])}；原因 {e(reasons)}。</p>
-<details><summary>输入包与版本</summary><div class="small">bundle_id {e(rel['bundle_id'])}<br>
+<p class="small">成对判断的"情景边界" = 日终历史差分 P95×√交易日数 + 报价错位情景（VM-11 波动假设）+ 净值舍入；
+未经盘中实测，"超出情景边界"只表示超出该声明边界，不是统计显著性。</p>
+<details><summary>输入包与版本</summary><div class="small">{persisted}<br>bundle_id {e(rel['bundle_id'])}<br>
 {e(json.dumps(rel['versions'], ensure_ascii=False))}<br>{e(', '.join(rel['notes']))}</div></details>"""
 
 
@@ -118,7 +128,7 @@ def render_html(snap: dict[str, Any]) -> str:
 <style>body{{font:14px -apple-system,sans-serif;margin:16px;color:#222}}table{{border-collapse:collapse;margin:8px 0 20px}}
 td,th{{border:1px solid #ddd;padding:4px 8px;text-align:left;white-space:nowrap}}th{{background:#f4f4f4}}
 .bad td{{background:#fff1f0}}.wrap{{overflow-x:auto}}h2{{font-size:16px;margin-top:20px}}
-.small{{font-size:12px;color:#666;white-space:normal}}.muted td{{color:#999}}details{{white-space:normal}}</style></head><body>
+.small{{font-size:12px;color:#666;white-space:normal}}.notice{{background:#fff8e1;padding:8px;border-left:3px solid #f0a000}}.muted td{{color:#999}}details{{white-space:normal}}</style></head><body>
 <h1 style="font-size:18px">纳指100 QDII ETF 相对比较</h1>
 {render_relative(snap.get('relative'))}
 <h2>采集状态</h2>
@@ -197,6 +207,9 @@ def _handler(snapshot: Callable[[], dict[str, Any]], allowed: ipaddress.IPv4Netw
                 await _respond(writer, 405, "text/plain", b"method not allowed")
             elif request_line[1] == "/health.json":
                 body = json.dumps(snapshot(), ensure_ascii=False, default=str).encode()
+                await _respond(writer, 200, "application/json; charset=utf-8", body)
+            elif request_line[1] == "/relative/bundle.json":
+                body = json.dumps(snapshot().get("relative_bundle"), ensure_ascii=False, default=str).encode()
                 await _respond(writer, 200, "application/json; charset=utf-8", body)
             elif request_line[1] == "/relative.json":
                 body = json.dumps(snapshot().get("relative"), ensure_ascii=False, default=str).encode()

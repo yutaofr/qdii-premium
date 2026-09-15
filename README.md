@@ -1,8 +1,8 @@
 # qdii-premium
 
-纳指100 QDII ETF 相对估值与溢价监测。当前状态：**MVP（相对估值参考，R 路径）已实现并运行**；Phase 0 真实会话积累中。
+纳指100 QDII ETF 相对估值与溢价监测。当前状态：**相对比较研究预览（R 路径）**：只回答五只中谁相对便宜，**不提供绝对估算溢价，不能据此判断是否满足买入条件**；Phase 0 真实会话积累中。
 
-- MVP 验收：[reports/mvp/acceptance.md](reports/mvp/acceptance.md)
+- MVP 验收：[reports/mvp/acceptance.md](reports/mvp/acceptance.md)；评审与处理：[review](reports/mvp/review-2026-09-15.md)、[response](reports/mvp/review-2026-09-15-response.md)
 
 - 需求与规范：[docs/spec/](docs/spec/)（SRD 1.3、DS/VM/QS 1.0）及 [勘误](docs/SRD_v1.3_errata.md)
 - 架构：[docs/ADD-0_Phase0_and_Core.md](docs/ADD-0_Phase0_and_Core.md)
@@ -37,7 +37,7 @@
 
 ## 使用
 
-- 首屏（本机）：`http://127.0.0.1:8787/`，数据接口 `/relative.json`、`/health.json`
+- 首屏（本机）：`http://127.0.0.1:8787/`，数据接口 `/relative.json`（视图）、`/relative/bundle.json`（完整输入包）、`/health.json`
 - 命令行：`uv run qdii relative`（当前）；`uv run qdii relative --at 2026-09-15T14:50:00+08:00`（任意历史时刻）
 
 ## Phase 0 证据
@@ -69,7 +69,9 @@ uv run qdii events --tail 30                                              # 启�
 uv run qdii unblock sina.etf_batch                                        # 确认后解除 403/429 封禁
 uv run qdii relative                                                      # 当前相对比较（非交易时段自动给收盘参考）
 uv run qdii relative --at 2026-09-15T14:50:00+08:00 --json                # 回放任意历史时刻
-uv run qdii replay relative --date 2026-09-15 --stream                     # 确定性回放校验
+uv run qdii replay relative --date 2026-09-15 --stream                     # 确定性回放校验（NO_DATA 退出码 3）
+uv run qdii relative --save                                               # 保存当前决策快照
+uv run python tools/mvp_replay_evidence.py 2026-09-15                     # 重新生成回放证据与逐点延迟
 uv run qdii research fetch-history --since 2025-01-01                     # 历史数据 → ~/qdii-data/research
 uv run qdii research nav-fx                                               # 从原始日志重解析并生成 PH0-07 报告
 uv run --group research qdii research fund-rules                          # PH0-06：招募说明书下载到仓库外并提取条款

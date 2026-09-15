@@ -75,6 +75,21 @@ url = "https://api.fund.eastmoney.com/f10/lsjz?fundCode=513390&pageIndex=1&pageS
 headers = { Referer = "https://fundf10.eastmoney.com/" }
 idle_interval_s = 900
 
+# ---------------- 跨日归一化因子（评审 R4：各基金净值日期不同时仍可比较） ----------------
+# I(a)：Nasdaq 官方 NDX 日收盘；X0：中国货币网当日 USD/CNY 中间价（L0_FX_T，PH0-06/07 已核验）
+
+[[endpoint]]
+id = "nasdaq.ndx_history"
+source_id = "nasdaq"
+url = "https://api.nasdaq.com/api/quote/NDX/historical?assetclass=index&fromdate={from_date}&todate={to_date}&limit=40"
+idle_interval_s = 3600
+
+[[endpoint]]
+id = "chinamoney.ccpr"
+source_id = "chinamoney"
+url = "https://www.chinamoney.com.cn/ags/ms/cm-u-bk-ccpr/CcprHisNew?currency=USD/CNY&pageNum=1&pageSize=40"
+idle_interval_s = 3600
+
 # ---------------- NQ（身份与时效探测；美股收盘锚点不在主机窗口内，E 路径暂不采锚点） ----------------
 
 [[endpoint]]

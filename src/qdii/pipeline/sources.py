@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from qdii.io.http import EndpointRequest
@@ -54,3 +55,16 @@ def load_sources(path: Path) -> tuple[str, float, list[EndpointConfig]]:
             enabled=item.get("enabled", True),
         ))
     return user_agent, timeout_s, endpoints
+
+
+def render_request(req: EndpointRequest, now_utc_ns: int) -> EndpointRequest:
+    """URL 日期占位符在请求时刻填入：{from_date}（30 天前）与 {to_date}（今天），按 UTC 日期。
+
+    原始日志记录填入后的实际 URL，回放不依赖渲染时刻。
+    """
+    if "{" not in req.url:
+        return req
+    today = datetime.fromtimestamp(now_utc_ns / 1e9, tz=UTC).date()
+    url = req.url.replace("{to_date}", today.isoformat()).replace(
+        "{from_date}", (today - timedelta(days=30)).isoformat())
+    return replace(req, url=url)

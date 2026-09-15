@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 
 from qdii.apps.health import EventLog, Health
-from qdii.apps.relative_snapshot import new_state, relevant, replay_into, view
+from qdii.apps.relative_snapshot import full_bundle, new_state, relevant, replay_into, view
 from qdii.apps.status import serve_status
 from qdii.contracts.registry import get_parser
 from qdii.core.relative_bundle import canonical_json, evaluate_bundle, snapshot_to_dict
@@ -35,7 +35,7 @@ from qdii.io.clock import Clock, SystemClock
 from qdii.io.http import BlockList, EndpointState, Fetcher
 from qdii.io.snapshot_store import SnapshotStore
 from qdii.pipeline.relative_state import ETF_ENDPOINT, RelativeState
-from qdii.pipeline.sources import EndpointConfig, load_sources
+from qdii.pipeline.sources import EndpointConfig, load_sources, render_request
 from qdii.pipeline.windows import WEEKDAYS, HostWindow, parse_hhmm
 
 log = logging.getLogger("qdii.collect")
@@ -123,7 +123,7 @@ class Collector:
         self.relative: RelativeState | None = None
         self.names: dict[str, str] = {}
         if repo_root is not None and (repo_root / "config" / "funds.toml").exists():
-            self.relative = new_state(repo_root)
+            self.relative = new_state(repo_root, root, update_ledger=True)
             self.names = {f.code: f.name for f in self.relative.funds}
         self.snapshots = SnapshotStore(root)
 
@@ -137,6 +137,8 @@ class Collector:
             self.events.emit("TAIL_REPAIR", path=str(fix.path), truncated_bytes=fix.truncated_bytes)
         self.writer = rawlog.RawLogWriter(root)
         if self.relative is not None:
+            for err in self.relative.cal.errors:  # AT58/60：日历覆盖问题必须可见
+                self.events.emit("CALENDAR_UNCERTAIN", error=err)
             n = await asyncio.to_thread(replay_into, self.relative, root, now)
             self.events.emit("RELATIVE_BOOTSTRAP", messages=n)
         self.events.emit("START", run_id=self.run_id, pid=os.getpid(),
@@ -204,7 +206,9 @@ class Collector:
             elif not active and self.window_open.is_set():
                 self.window_open.clear()
                 self._release_sleep_assertion()
-                self.events.emit("WINDOW_CLOSE", counts={eid: [s.ok_count, s.fail_count]
+                self.events.emit("WINDOW_CLOSE", relative_snapshots=self.health.relative_snapshots,
+                                 last_bundle_id=self.health.relative_last_bundle_id,
+                                 counts={eid: [s.ok_count, s.fail_count]
                                                          for eid, s in sorted(self.health.endpoints.items())})
             await self._sleep(MAX_WAIT_S if not active else 5.0)
 
@@ -246,7 +250,7 @@ class Collector:
                     continue
                 started = self.clock.monotonic_ns()
                 assert self.fetcher is not None
-                msg = await self.fetcher.fetch(req, next(self.seq))
+                msg = await self.fetcher.fetch(render_request(req, self.clock.now_utc_ns()), next(self.seq))
                 self._write(msg)
                 state.record(msg)
                 if state.blocked_reason and req.endpoint_id not in self.health.blocklist.entries:
@@ -302,7 +306,11 @@ class Collector:
         if self.relative is not None:
             try:
                 bundle = self.relative.bundle(now)
-                snap["relative"] = view(evaluate_bundle(bundle), bundle, self.names)
+                rel_snap = evaluate_bundle(bundle)
+                snap["relative"] = view(rel_snap, bundle, self.names)
+                snap["relative"]["persisted"] = False  # 页面输入包按请求时刻生成，不写入快照库（ADR-020）
+                snap["relative"]["last_persisted_bundle_id"] = self.health.relative_last_bundle_id
+                snap["relative_bundle"] = full_bundle(rel_snap, bundle)
             except Exception as exc:  # 状态页计算失败不影响采集，但必须留下记录
                 log.exception("relative view failed")
                 snap["relative"] = {"error": repr(exc)}

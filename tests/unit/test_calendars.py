@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -42,3 +43,51 @@ def test_us_early_close_and_sessions_between():
     assert s is not None and s.close_utc_ns == ns(2026, 11, 27, 18, 0)  # 13:00 ET
     assert CAL.sessions_between("SSE", date(2026, 9, 30), date(2026, 10, 9)) == [date(2026, 10, 8), date(2026, 10, 9)]
     assert CAL.version.startswith("exchange_calendars==") and CAL.tzdb_version.startswith("tzdata==")
+
+
+# ---------- AT58 / AT60 ----------
+
+BASE = (REPO / "config" / "calendar_overrides.toml").read_text(encoding="utf-8")
+CLOSURE = """
+[[closure]]
+market = "SSE"
+date = "2026-09-16"
+source = "https://example.invalid/temporary-closure"
+"""
+
+
+def test_valid_closure_override_applies_and_is_ledgered(tmp_path):
+    ov, ledger = tmp_path / "ov.toml", tmp_path / "ledger.json"
+    ov.write_text(BASE + CLOSURE, encoding="utf-8")
+    cal = CalendarProvider(ov, ledger_path=ledger, update_ledger=True)
+    assert cal.errors == [] and cal.phase("SZSE", ns(2026, 9, 16, 2, 0))[0] is MarketPhase.CLOSED
+    assert json.loads(ledger.read_text())["XSHG"] == ["2026-09-16"]
+
+
+def test_at58_corrupt_override_not_half_loaded(tmp_path):
+    ov = tmp_path / "ov.toml"
+    ov.write_text(BASE + CLOSURE.replace("2026-09-16", "2026-13-40"), encoding="utf-8")
+    cal = CalendarProvider(ov)
+    assert cal.errors and "+UNCERTAIN" in cal.version
+    phase, _, covered = cal.phase("SSE", ns(2026, 9, 15, 2, 0))
+    assert phase is MarketPhase.UNKNOWN and covered is False
+    assert cal.sessions_between("SSE", date(2026, 9, 11), date(2026, 9, 15)) == []
+
+
+def test_at58_unknown_keys_or_missing_source_rejected(tmp_path):
+    ov = tmp_path / "ov.toml"
+    ov.write_text(BASE + CLOSURE.replace('source = "https://example.invalid/temporary-closure"\n', ""), encoding="utf-8")
+    assert CalendarProvider(ov).errors
+    ov.write_text(BASE + "\n[open_day]\nmarket = 'SSE'\n", encoding="utf-8")
+    assert CalendarProvider(ov).errors
+
+
+def test_at60_rollback_removing_known_closure_rejected(tmp_path):
+    ov, ledger = tmp_path / "ov.toml", tmp_path / "ledger.json"
+    ov.write_text(BASE + CLOSURE, encoding="utf-8")
+    CalendarProvider(ov, ledger_path=ledger, update_ledger=True)
+    ov.write_text(BASE, encoding="utf-8")  # 回退到不含该临时休市的旧版本
+    cal = CalendarProvider(ov, ledger_path=ledger, update_ledger=True)
+    assert any("rollback rejected" in e for e in cal.errors)
+    assert cal.phase("SSE", ns(2026, 9, 16, 2, 0))[1:] == (None, False)
+    assert json.loads(ledger.read_text())["XSHG"] == ["2026-09-16"]  # 台账不被不一致版本改写

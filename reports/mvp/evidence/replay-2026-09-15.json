@@ -1,0 +1,49 @@
+{
+  "nature": "REGENERATED_FROM_PRODUCTION_RAW_LOG (not production-written snapshots)",
+  "generated_utc": "2026-09-15T10:08:24+00:00",
+  "target_utc_date": "2026-09-15",
+  "evidence_dir": "/Users/weizhang/qdii-data/evidence/mvp/replay-2026-09-15",
+  "snapshot_files": {
+    "2026-09-15.jsonl": {
+      "lines": 1290,
+      "sha256": "fbfdc15a589e9493b9697b8c8117e9d44123976a4fcd63c378408784888f17b6"
+    }
+  },
+  "triggers": 1290,
+  "per_trigger_latency_ms": {
+    "p50": 2.047,
+    "p95": 2.343,
+    "max": 8.195,
+    "nfr01_limit_ms": 1000
+  },
+  "verify_bundle": {
+    "mode": "bundle",
+    "dates": [
+      "2026-09-15"
+    ],
+    "store": "/Users/weizhang/qdii-data/evidence/mvp/replay-2026-09-15/snapshots/relative",
+    "snapshots": 1290,
+    "verified": 1290,
+    "integrity_failures": 0,
+    "mismatches": 0,
+    "version_changes": 0,
+    "missing_triggers": 0,
+    "examples": [],
+    "status": "PASSED"
+  },
+  "verify_stream": {
+    "mode": "stream",
+    "dates": [
+      "2026-09-15"
+    ],
+    "store": "/Users/weizhang/qdii-data/evidence/mvp/replay-2026-09-15/snapshots/relative",
+    "snapshots": 1290,
+    "verified": 1290,
+    "integrity_failures": 0,
+    "mismatches": 0,
+    "version_changes": 0,
+    "missing_triggers": 0,
+    "examples": [],
+    "status": "PASSED"
+  }
+}

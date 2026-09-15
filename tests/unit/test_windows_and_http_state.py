@@ -75,3 +75,15 @@ def test_repo_sources_config_loads_and_sina_has_referer():
     for e in endpoints:
         if e.request.source_id == "sina" and "hq.sinajs.cn" in e.request.url:
             assert dict(e.request.headers).get("Referer") == "https://finance.sina.com.cn/"
+
+
+def test_render_request_fills_date_placeholders_only():
+    from qdii.pipeline.sources import render_request
+
+    req = next(e.request for e in load_sources(REPO / "config" / "sources.toml")[2]
+               if e.request.endpoint_id == "nasdaq.ndx_history")
+    out = render_request(req, ns(2026, 9, 15, 6, 0))
+    assert "fromdate=2026-08-16" in out.url and "todate=2026-09-15" in out.url and "{" not in out.url
+    plain = next(e.request for e in load_sources(REPO / "config" / "sources.toml")[2]
+                 if e.request.endpoint_id == "sina.etf_batch")
+    assert render_request(plain, 0) is plain

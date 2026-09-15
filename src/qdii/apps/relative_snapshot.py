@@ -25,28 +25,25 @@ from qdii.core.relative_bundle import (
 )
 from qdii.io import rawlog
 from qdii.io.calendars import CalendarProvider
-from qdii.pipeline.relative_state import (
-    ETF_ENDPOINT,
-    NAV_ENDPOINT_PREFIX,
-    RelativeState,
-    load_funds,
-    load_latest_udiff,
-)
+from qdii.pipeline.relative_state import RelativeState, is_relative_input, load_funds, load_latest_udiff
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 LOOKBACK_DAYS = 10
 
 
-def new_state(repo: Path) -> RelativeState:
+def new_state(repo: Path, data_root: Path | None = None, *, update_ledger: bool = False) -> RelativeState:
+    """data_root 给出时启用已激活休市台账（AT60）；只有采集器更新台账，命令行与回放只读检查。"""
+    ledger = data_root / "state" / "calendar_closures.json" if data_root is not None else None
     return RelativeState(
-        cal=CalendarProvider(repo / "config" / "calendar_overrides.toml"),
+        cal=CalendarProvider(repo / "config" / "calendar_overrides.toml", ledger_path=ledger,
+                             update_ledger=update_ledger),
         funds=load_funds(repo / "config" / "funds.toml"),
         udiff=load_latest_udiff(repo),
     )
 
 
 def relevant(endpoint_id: str) -> bool:
-    return endpoint_id == ETF_ENDPOINT or endpoint_id.startswith(NAV_ENDPOINT_PREFIX)
+    return is_relative_input(endpoint_id)
 
 
 def utc_dates(cutoff_ns: int, days: int = LOOKBACK_DAYS) -> list[str]:
@@ -65,7 +62,7 @@ def replay_into(state: RelativeState, data_root: Path, cutoff_utc_ns: int) -> in
 
 def build(data_root: Path, repo: Path, cutoff_utc_ns: int, basis: str | None = None
           ) -> tuple[RelativeSnapshot, RelativeBundle, dict[str, str]]:
-    state = new_state(repo)
+    state = new_state(repo, data_root)
     replay_into(state, data_root, cutoff_utc_ns)
     bundle = state.bundle(cutoff_utc_ns, basis)
     return evaluate_bundle(bundle), bundle, {f.code: f.name for f in state.funds}
@@ -88,7 +85,10 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
         p = next(p for p in g.pairs if {p.i, p.j} == {i, j})
         sign = 1 if p.i == i else -1
         pair_to_next[i] = {"next": j, "delta": sign * p.delta, "abs_ln_bp": abs(p.ln_ratio) * 1e4,
-                           "u_diff_bp": None if p.u_diff is None else p.u_diff * 1e4, "status": p.status.value}
+                           "u_diff_bp": None if p.u_diff is None else p.u_diff * 1e4, "status": p.status.value,
+                           "skew_s": p.skew_s, "daily_bp": p.daily_bp, "skew_bp": p.skew_bp,
+                           "rounding_bp": p.rounding_bp, "bound_source": p.bound_source,
+                           "reasons": [r.value for r in p.reasons]}
     mq = {m.code: m for m in q.members}
     rows = []
     for m in g.members:
@@ -96,7 +96,7 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
         rows.append({
             "rank": m.rank, "code": m.code, "name": names.get(m.code, ""), "eligible": m.eligible,
             "price": s.price, "volume": s.volume, "nav": s.nav, "nav_date": s.nav_date,
-            "nav_premium": m.nav_premium, "rel_to_best": None if m.s is None or best is None else m.s / best - 1,
+            "last_price": s.last_price, "nav_premium": m.nav_premium, "nav_premium_basis": "LAST", "rel_to_best": None if m.s is None or best is None else m.s / best - 1,
             "quote_time_utc_ns": s.quote_time_utc_ns, "age_s": mq[m.code].age_s, "freshness": mq[m.code].freshness,
             "reasons": [r.value for r in m.reasons], "to_next": pair_to_next.get(m.code),
             "snapshot_msg_id": s.snapshot_msg_id, "nav_msg_id": s.nav_msg_id,
@@ -108,7 +108,33 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
         "reasons": [r.value for r in g.reasons], "quality": snapshot_to_dict(snap)["quality"],
         "sessions_since_anchor": bundle.sessions_since_anchor, "versions": dict(bundle.versions),
         "notes": list(bundle.notes), "rows": rows,
+        "anchor_date": None if g.anchor_date is None else g.anchor_date.isoformat(),
+        "calendar_covered": bundle.calendar_covered,
+        # 评审结论：R 只回答横向比较；绝对估算溢价（E 路径）未启用，不能据此判断买入条件是否满足
+        "absolute_premium_available": False,
+        "scope_notice": "本结果只回答五只中谁相对便宜；即使全部都很贵也会有第一名。"
+                        "绝对估算溢价（E-NAV）未启用，无法判断某只的绝对溢价是否满足买入条件。",
     }
+
+
+def full_bundle(snap: RelativeSnapshot, bundle: RelativeBundle) -> dict[str, Any]:
+    """完整可复算材料（评审口径 2）：规范输入包 + 结果 + 质量。"""
+    return {"bundle_id": snap.bundle_id, "bundle": json.loads(canonical_json(bundle)),
+            "snapshot": snapshot_to_dict(snap)}
+
+
+def pair_text(p: dict[str, Any]) -> str:
+    """成对判断的人读说明：结论必须与边界分项一起出现（评审 R1）。"""
+    diff = f"差 {p['abs_ln_bp']:.1f}bp"
+    if p["u_diff_bp"] is None:
+        return f"{diff}；仅模型参考（无差分边界）"
+    parts = (f"日终历史 {p['daily_bp']:.1f} + 报价错位 {p['skew_bp']:.1f}（{p['skew_s']:.0f}s）"
+             f" + 舍入 {p['rounding_bp']:.1f}")
+    if p["status"] == "ROBUST_DIFFERENCE":
+        return f"{diff} > 情景边界 {p['u_diff_bp']:.1f}bp（{parts}）：超出情景边界"
+    if p["status"] == "UNRESOLVED":
+        return f"{diff} ≤ 情景边界 {p['u_diff_bp']:.1f}bp（{parts}）：未能区分"
+    return f"{diff}；报价错位 {p['skew_s']:.0f}s 超过强结论上限，仅模型参考"
 
 
 def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) -> str:
@@ -133,11 +159,10 @@ def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]
     if pairs:
         lines += ["", "相邻排名成对判断（δ = S_i/S_j − 1；边界为日终历史差分 P95 放大后的情景值）："]
         for code, p in pairs:
-            u = "—" if p["u_diff_bp"] is None else f"{p['u_diff_bp']:.1f}bp"
-            lines.append(f"  {code} vs {p['next']}: δ={p['delta'] * 100:+.3f}%  |lnR|={p['abs_ln_bp']:.1f}bp  "
-                         f"边界 {u}  → {p['status']}")
+            lines.append(f"  {code} vs {p['next']}: δ={p['delta'] * 100:+.3f}%  {pair_text(p)}")
     lines += [
         "",
+        v["scope_notice"],
         (f"质量：来源可信度 {q['provenance_confidence']}；延迟 {q['delay_status']}；模型 {q['model_status']}；"
          f"对齐 {q['alignment']}；原因 {','.join(v['reasons']) or '无'}。"),
         f"输入包 {v['bundle_id'][:16]}；版本 {json.dumps(v['versions'], ensure_ascii=False)}。",
@@ -147,5 +172,4 @@ def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]
 
 
 def to_json(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) -> str:
-    return json.dumps({"view": view(snap, bundle, names), "bundle": json.loads(canonical_json(bundle)),
-                       "snapshot": snapshot_to_dict(snap)}, ensure_ascii=False, indent=2)
+    return json.dumps({"view": view(snap, bundle, names), **full_bundle(snap, bundle)}, ensure_ascii=False, indent=2)

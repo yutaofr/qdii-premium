@@ -27,7 +27,7 @@ from qdii.core.relative import (
 )
 from qdii.core.types import ReasonCode
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2（评审修正）：最新价、跨日归一化因子、日历覆盖、分项差分边界、完整策略参数
 FLOAT_TOLERANCE = 1e-10
 
 
@@ -44,6 +44,10 @@ class MemberSpec:
     nav_reasons: tuple[str, ...] = ()
     snapshot_msg_id: str | None = None
     nav_msg_id: str | None = None
+    last_price: str | None = None  # 官方净值对照口径（SRD §4）
+    index_at_anchor: str | None = None  # I(a)：不晚于净值日的最近 NDX 收盘
+    fx_at_anchor: str | None = None  # X0：净值日当日中间价（L0_FX_T）
+    anchor_factor_msg_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,13 +56,12 @@ class RelativeBundle:
     cutoff_utc_ns: int
     mode: str
     price_basis: str
-    policy_version: str
-    max_age_s: float
-    max_span_s: float
+    policy: tuple[tuple[str, float | str], ...]  # RelativePolicy 全部字段
+    calendar_covered: bool
     sessions_since_anchor: int | None
     model_status: str  # HISTORICAL_VALIDATED / UNCALIBRATED
     members: tuple[MemberSpec, ...]
-    bounds: tuple[tuple[str, str, float, str], ...]  # (i, j, u_diff_ln, source)，i<j
+    bounds: tuple[tuple[str, str, float, float, str], ...]  # (i, j, daily_bp, rounding_bp, source)，i<j
     versions: tuple[tuple[str, str], ...]
     notes: tuple[str, ...] = ()
 
@@ -72,12 +75,16 @@ def bundle_id(bundle: RelativeBundle) -> str:
 
 
 def bundle_from_dict(d: dict[str, Any]) -> RelativeBundle:
+    if d.get("schema") != SCHEMA_VERSION:
+        raise ValueError(f"unsupported bundle schema {d.get('schema')}")
     return RelativeBundle(
         schema=d["schema"], cutoff_utc_ns=d["cutoff_utc_ns"], mode=d["mode"], price_basis=d["price_basis"],
-        policy_version=d["policy_version"], max_age_s=d["max_age_s"], max_span_s=d["max_span_s"],
+        policy=tuple((k, v) for k, v in d["policy"]), calendar_covered=d["calendar_covered"],
         sessions_since_anchor=d["sessions_since_anchor"], model_status=d["model_status"],
-        members=tuple(MemberSpec(**{**m, "nav_reasons": tuple(m["nav_reasons"])}) for m in d["members"]),
-        bounds=tuple((b[0], b[1], b[2], b[3]) for b in d["bounds"]),
+        members=tuple(MemberSpec(**{**m, "nav_reasons": tuple(m["nav_reasons"]),
+                                    "anchor_factor_msg_ids": tuple(m["anchor_factor_msg_ids"])})
+                      for m in d["members"]),
+        bounds=tuple((b[0], b[1], b[2], b[3], b[4]) for b in d["bounds"]),
         versions=tuple((v[0], v[1]) for v in d["versions"]),
         notes=tuple(d["notes"]),
     )
@@ -153,24 +160,30 @@ def evaluate_bundle(bundle: RelativeBundle) -> RelativeSnapshot:
             nav=Decimal(m.nav) if m.nav is not None else None,
             nav_date=date.fromisoformat(m.nav_date) if m.nav_date else None,
             nav_verified=m.nav_verified,
-            extra_reasons=tuple(ReasonCode(r) for r in m.nav_reasons),
+            index_at_anchor=float(m.index_at_anchor) if m.index_at_anchor is not None else None,
+            fx_at_anchor=float(m.fx_at_anchor) if m.fx_at_anchor is not None else None,
+            extra_reasons=tuple(ReasonCode(r) for r in m.nav_reasons)
+            + (() if bundle.calendar_covered else (ReasonCode.CALENDAR_UNCERTAIN,)),
+            last_price=Decimal(m.last_price) if m.last_price is not None else None,
         )
         for m in bundle.members
     ]
     health = anchor_health(bundle.sessions_since_anchor)
-    bounds = {frozenset((i, j)): PairBound(u, src) for i, j, u, src in bundle.bounds}
+    bounds = {frozenset((i, j)): PairBound(daily, rnd, src) for i, j, daily, rnd, src in bundle.bounds}
     if health in ("EXTENDED", "INVALID"):
         bounds = {}  # QS-03：EXTENDED 不授予 ROBUST_DIFFERENCE
-    policy = RelativePolicy(bundle.policy_version, bundle.max_age_s, bundle.max_span_s)
+    policy = RelativePolicy(**dict(bundle.policy))
     result = evaluate_relative(members, mode=mode, price_basis=bundle.price_basis,
                                cutoff_utc_ns=bundle.cutoff_utc_ns, policy=policy, bounds=bounds)
 
     extra: list[ReasonCode] = []
+    if not bundle.calendar_covered:
+        extra.append(ReasonCode.CALENDAR_UNCERTAIN)
     if health == "AGED":
         extra.append(ReasonCode.ANCHOR_AGED)
     elif health == "EXTENDED":
         extra.append(ReasonCode.ANCHOR_EXTENDED)
-    elif health == "INVALID":
+    elif health == "INVALID" and bundle.calendar_covered:
         extra.append(ReasonCode.ANCHOR_INVALID)
     if result.pairs and all(p.u_diff is None for p in result.pairs):
         extra.append(ReasonCode.DIFFERENTIAL_UNCALIBRATED)

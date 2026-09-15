@@ -57,6 +57,6 @@ def test_collector_writes_replayable_relative_snapshots(tmp_path):
 
     bundle_report = verify(tmp_path, REPO, dates)
     stream_report = verify(tmp_path, REPO, dates, stream=True)
-    assert bundle_report["mismatches"] == 0 and bundle_report["integrity_failures"] == 0
-    assert stream_report["mismatches"] == 0, stream_report
+    assert bundle_report["status"] == "PASSED" and bundle_report["verified"] == len(records)
+    assert stream_report["status"] == "PASSED", stream_report
     assert datetime.now(UTC).date().isoformat() in dates or dates

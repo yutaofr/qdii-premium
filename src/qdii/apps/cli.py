@@ -139,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("--at", default=None, help="ISO 时间，含时区，如 2026-09-15T14:59:30+08:00；默认现在")
     rel.add_argument("--basis", choices=["ASK", "LAST"], default=None)
     rel.add_argument("--json", action="store_true")
+    rel.add_argument("--save", action="store_true", help="把本次输入包与结果保存到 snapshots/decisions/，便于事后复盘")
     rel.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     rel.set_defaults(func=cmd_relative)
 
@@ -146,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr = rp.add_parser("relative", help="重算已存相对比较快照；--stream 从原始日志重建输入包再比对")
     rr.add_argument("--date", action="append", required=True, help="快照 UTC 日期 YYYY-MM-DD，可重复")
     rr.add_argument("--stream", action="store_true")
+    rr.add_argument("--kind", choices=["relative", "decisions"], default="relative")
     rr.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     rr.set_defaults(func=cmd_replay_relative)
 
@@ -179,8 +181,16 @@ def cmd_relative(args: argparse.Namespace) -> int:
     else:
         cutoff = int(datetime.now(UTC).timestamp() * 1e9)
     repo = Path(__file__).resolve().parents[3]
-    snap, bundle, names = build(Path(args.data_root).expanduser(), repo, cutoff, args.basis)
+    data_root = Path(args.data_root).expanduser()
+    snap, bundle, names = build(data_root, repo, cutoff, args.basis)
     print(to_json(snap, bundle, names) if args.json else render(snap, bundle, names))
+    if args.save:
+        from qdii.core.relative_bundle import canonical_json, snapshot_to_dict
+        from qdii.io.snapshot_store import SnapshotStore
+
+        path = SnapshotStore(data_root, "decisions").append(
+            canonical_json(bundle), snapshot_to_dict(snap), int(datetime.now(UTC).timestamp() * 1e9))
+        print(f"决策快照已保存：{path}（bundle_id {snap.bundle_id}）", file=sys.stderr)
     return 0
 
 
@@ -188,9 +198,9 @@ def cmd_replay_relative(args: argparse.Namespace) -> int:
     from qdii.apps.replay_relative import verify
 
     repo = Path(__file__).resolve().parents[3]
-    report = verify(Path(args.data_root).expanduser(), repo, args.date, stream=args.stream)
+    report = verify(Path(args.data_root).expanduser(), repo, args.date, stream=args.stream, kind=args.kind)
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0 if report["mismatches"] == 0 and report["integrity_failures"] == 0 else 1
+    return {"PASSED": 0, "NO_DATA": 3, "VERSION_CHANGED": 4}.get(report["status"], 1)
 
 
 def cmd_research_fetch(args: argparse.Namespace) -> int:

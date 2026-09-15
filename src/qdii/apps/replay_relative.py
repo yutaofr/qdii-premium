@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,18 +23,21 @@ from qdii.core.relative_bundle import (
 )
 from qdii.io import rawlog
 from qdii.io.snapshot_store import SnapshotStore
-from qdii.pipeline.relative_state import ETF_ENDPOINT
 
 LOOKBACK_DAYS = 10
 MAX_EXAMPLES = 5
 
 
-def verify(data_root: Path, repo: Path, dates: list[str], *, stream: bool = False) -> dict[str, Any]:
-    store = SnapshotStore(data_root)
+def verify(data_root: Path, repo: Path, dates: list[str], *, stream: bool = False,
+           kind: str = "relative") -> dict[str, Any]:
+    store = SnapshotStore(data_root, kind)
     records = list(store.iter(sorted(dates)))
     report: dict[str, Any] = {"mode": "stream" if stream else "bundle", "dates": sorted(dates),
-                              "snapshots": len(records), "integrity_failures": 0, "mismatches": 0,
-                              "version_changes": 0, "missing_triggers": 0, "examples": []}
+                              "store": str(store.dir), "snapshots": len(records), "verified": 0,
+                              "integrity_failures": 0, "mismatches": 0, "version_changes": 0,
+                              "missing_triggers": 0, "examples": [], "status": "NO_DATA"}
+    if not records:  # 评审 R5：零样本不是成功
+        return report
 
     def example(kind: str, rec: dict, detail: Any) -> None:
         if len(report["examples"]) < MAX_EXAMPLES:
@@ -53,37 +57,44 @@ def verify(data_root: Path, repo: Path, dates: list[str], *, stream: bool = Fals
             if diffs:
                 report["mismatches"] += 1
                 example("RESULT", rec, diffs[:5])
-        return report
+            else:
+                report["verified"] += 1
+        return _finish(report)
 
-    by_cutoff = {rec["bundle"]["cutoff_utc_ns"]: rec for rec in records}
-    if not by_cutoff:
-        return report
+    # 流模式：对每条快照，先按 (received_at, msg_id) 顺序喂入截止时刻及之前收到的原始消息，
+    # 再在该截止时刻重建输入包比较 bundle_id（适用于触发快照与主动保存的决策快照）
+    ordered = sorted(records, key=lambda r: r["bundle"]["cutoff_utc_ns"])
     first = min(date.fromisoformat(d) for d in dates) - timedelta(days=LOOKBACK_DAYS)
     last = max(date.fromisoformat(d) for d in dates) + timedelta(days=1)
     span = [(first + timedelta(days=i)).isoformat() for i in range((last - first).days + 1)]
-    state = new_state(repo)
-    seen = set()
-    for msg in rawlog.iter_messages(data_root, dates=span, end_utc_ns=max(by_cutoff) + 1):
-        if not relevant(msg.endpoint_id):
-            continue
-        state.ingest(msg)
-        if msg.endpoint_id != ETF_ENDPOINT or msg.received_utc_ns not in by_cutoff:
-            continue
-        rec = by_cutoff[msg.received_utc_ns]
-        seen.add(msg.received_utc_ns)
-        rebuilt = state.bundle(msg.received_utc_ns)
+    state = new_state(repo, data_root)
+    messages = iter(rawlog.iter_messages(data_root, dates=span, end_utc_ns=ordered[-1]["bundle"]["cutoff_utc_ns"] + 1))
+    pending = next(messages, None)
+    for rec in ordered:
+        cutoff = rec["bundle"]["cutoff_utc_ns"]
+        while pending is not None and pending.received_utc_ns <= cutoff:
+            if relevant(pending.endpoint_id):
+                state.ingest(pending)
+            pending = next(messages, None)
+        rebuilt = state.bundle(cutoff, rec["bundle"]["price_basis"] if kind == "decisions" else None)
         if bundle_id(rebuilt) == rec["bundle_id"]:
+            report["verified"] += 1
             continue
-        stored = rec["bundle"]
-        import json
-
-        rebuilt_plain = json.loads(canonical_json(rebuilt))
+        rebuilt_plain, stored = json.loads(canonical_json(rebuilt)), rec["bundle"]
         if rebuilt_plain["versions"] != stored["versions"]:
             report["version_changes"] += 1
             example("VERSIONS", rec, diff_plain(rebuilt_plain["versions"], stored["versions"])[:5])
         else:
             report["mismatches"] += 1
             example("BUNDLE", rec, diff_plain(rebuilt_plain, stored)[:5])
-    report["missing_triggers"] = len(set(by_cutoff) - seen)
-    report["mismatches"] += report["missing_triggers"]
+    return _finish(report)
+
+
+def _finish(report: dict[str, Any]) -> dict[str, Any]:
+    if report["integrity_failures"] or report["mismatches"]:
+        report["status"] = "FAILED"
+    elif report["version_changes"]:
+        report["status"] = "VERSION_CHANGED"
+    else:
+        report["status"] = "PASSED" if report["verified"] == report["snapshots"] else "FAILED"
     return report

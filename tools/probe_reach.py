@@ -16,10 +16,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 ETF_CODES = ["sh513100", "sz159696", "sz159501", "sz159660", "sh513390"]
 USER_AGENT = "qdii-premium-probe/0.1 (personal research)"
@@ -212,7 +212,7 @@ def host_facts() -> dict:
         except Exception as e:
             return f"ERR {e}"
     return {
-        "utc_now": datetime.now(timezone.utc).isoformat(),
+        "utc_now": datetime.now(UTC).isoformat(),
         "local_tz": time.tzname, "python": sys.version.split()[0],
         "macos": platform.mac_ver()[0],
         "pmset": run(["pmset", "-g"]),
@@ -222,7 +222,7 @@ def host_facts() -> dict:
 
 
 def main() -> None:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_id = f"PROBE-{stamp}-home-mac"
     out = Path(__file__).resolve().parents[1] / "reports" / "phase0" / "reach" / stamp
     out.mkdir(parents=True, exist_ok=True)
