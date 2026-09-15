@@ -90,7 +90,8 @@ source_id = "chinamoney"
 url = "https://www.chinamoney.com.cn/ags/ms/cm-u-bk-ccpr/CcprHisNew?currency=USD/CNY&pageNum=1&pageSize=40"
 idle_interval_s = 3600
 
-# ---------------- NQ（身份与时效探测；美股收盘锚点不在主机窗口内，E 路径暂不采锚点） ----------------
+# ---------------- NQ（身份与时效探测；美股收盘锚点捕获，DS-09/10） ----------------
+# 实际是否请求受 collector.toml 的主机窗口约束：收盘锚点窗口由日历计算，下列美东时段只决定该时段内的轮询间隔。
 
 [[endpoint]]
 id = "sina.hf_NQ"
@@ -100,6 +101,8 @@ headers = { Referer = "https://finance.sina.com.cn/" }
 idle_interval_s = 60
 windows = [
   { tz = "Asia/Shanghai", start = "09:10", end = "15:10", interval_s = 5 },
+  { tz = "America/New_York", start = "12:50", end = "13:05", interval_s = 5 },  # 提前收盘 c 的超集
+  { tz = "America/New_York", start = "15:50", end = "16:05", interval_s = 5 },  # 常规收盘 c 的超集
 ]
 
 # ---------------- 汇率 ----------------

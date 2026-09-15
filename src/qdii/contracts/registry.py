@@ -7,13 +7,20 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from qdii.contracts import chinamoney_ccpr_his_v1, eastmoney_lsjz_v1, index_history_v1, sina_a_share_v1
+from qdii.contracts import (
+    chinamoney_ccpr_his_v1,
+    eastmoney_lsjz_v1,
+    index_history_v1,
+    sina_a_share_v1,
+    sina_hf_v1,
+)
 from qdii.core.types import ParseResult, RawMessage
 
 Parser = Callable[[RawMessage], ParseResult]
 
 PARSERS: dict[str, Parser] = {
     sina_a_share_v1.CONTRACT_VERSION: sina_a_share_v1.parse,
+    sina_hf_v1.CONTRACT_VERSION: sina_hf_v1.parse,
     eastmoney_lsjz_v1.CONTRACT_VERSION: eastmoney_lsjz_v1.parse,
     index_history_v1.FRED_VERSION: index_history_v1.parse_fred,
     index_history_v1.NASDAQ_VERSION: index_history_v1.parse_nasdaq,

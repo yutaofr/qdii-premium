@@ -32,6 +32,8 @@
 | `qdii.pipeline.relative_state` | 在线与回放共用的增量状态：as-of、净值修订隔离、因子组、收盘参考快照 |
 | `qdii.io.snapshot_store` | 相对比较快照只追加 JSONL（ADR-018） |
 | `qdii.apps.replay_relative` | `qdii replay relative`：输入包重算 / 流回放逐包比对 |
+| `qdii.contracts.sina_hf_v1`、`qdii.core.anchor`、`qdii.pipeline.anchor_capture`、`qdii.io.anchor_store` | 美股收盘期货锚点：hf_NQ 解析、VM-03 选取、到期评估、只追加锚点库（ADD-0 §17） |
+| `qdii.pipeline.host_windows` | A 股窗口 + 按日历计算的美股收盘窗口组合 |
 
 未实现（MVP 范围外）：绝对估值（E/V 路径）、价格机会通知、基金公告监控、SQLite 规范化存储。
 
@@ -71,10 +73,12 @@ uv run qdii relative                                                      # 当�
 uv run qdii relative --at 2026-09-15T14:50:00+08:00 --json                # 回放任意历史时刻
 uv run qdii replay relative --date 2026-09-15 --stream                     # 确定性回放校验（NO_DATA 退出码 3）
 uv run qdii relative --save                                               # 保存当前决策快照
+uv run qdii anchors                                                       # 最近的美股收盘期货锚点
+uv run qdii replay anchors --date 2026-09-15                              # 从原始日志重算锚点并比对（美东日期）
 uv run python tools/mvp_replay_evidence.py 2026-09-15                     # 重新生成回放证据与逐点延迟
 uv run qdii research fetch-history --since 2025-01-01                     # 历史数据 → ~/qdii-data/research
 uv run qdii research nav-fx                                               # 从原始日志重解析并生成 PH0-07 报告
 uv run --group research qdii research fund-rules                          # PH0-06：招募说明书下载到仓库外并提取条款
 ```
 
-数据目录 `~/qdii-data`：`raw/`（原始日志）、`snapshots/relative/`（相对比较快照）、`events/collector.jsonl`、`state/heartbeat.json`、`state/blocked.json`、`logs/`。
+数据目录 `~/qdii-data`：`raw/`（原始日志）、`anchors/futures/`（期货锚点）、`snapshots/relative/`（相对比较快照）、`events/collector.jsonl`、`state/heartbeat.json`、`state/blocked.json`、`logs/`。

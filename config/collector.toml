@@ -14,6 +14,14 @@ end_tz = "Asia/Shanghai"
 end = "15:05"
 weekdays = [0, 1, 2, 3, 4]
 
+# 美股收盘期货锚点窗口（2026-09-15 维护者同意，ADD-0 §15.3）：按 XNYS 日历取每个美股交易日实际收盘 c
+# （含提前收盘），窗口 [c−5 分钟, c+3 分钟)；平时为巴黎 21:55—22:03，欧美夏令时错位周 20:55—21:03。
+[anchor_window]
+enabled = true
+market = "NASDAQ"
+before_s = 300
+after_s = 180
+
 [heartbeat]
 interval_s = 30
 gap_threshold_s = 90        # 超过即记录 COLLECTOR_GAP

@@ -19,7 +19,7 @@ import signal
 import subprocess
 import tomllib
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -31,9 +31,13 @@ from qdii.contracts.registry import get_parser
 from qdii.core.relative_bundle import canonical_json, evaluate_bundle, snapshot_to_dict
 from qdii.core.types import ClockStatus, RawMessage
 from qdii.io import host, rawlog
+from qdii.io.anchor_store import AnchorStore
+from qdii.io.calendars import CalendarProvider
 from qdii.io.clock import Clock, SystemClock
 from qdii.io.http import BlockList, EndpointState, Fetcher
 from qdii.io.snapshot_store import SnapshotStore
+from qdii.pipeline.anchor_capture import HF_ENDPOINT, AnchorTracker
+from qdii.pipeline.host_windows import AvailabilityWindow, CloseWindow, CompositeWindow
 from qdii.pipeline.relative_state import ETF_ENDPOINT, RelativeState
 from qdii.pipeline.sources import EndpointConfig, load_sources, render_request
 from qdii.pipeline.windows import WEEKDAYS, HostWindow, parse_hhmm
@@ -57,20 +61,29 @@ class CollectorConfig:
     status_interface: str
     status_port: int
     status_lan_enabled: bool = False
-    host_window: HostWindow | None = None  # None = 全天可用
+    host_window: AvailabilityWindow | None = None  # None = 全天可用；可为 A 股窗口与美股收盘窗口的组合
     host_probe_enabled: bool = True
+    anchor_window: CloseWindow | None = None  # 启用时捕获美股收盘期货锚点（DS-09/10）
 
 
 def load_collector_config(path: Path, data_root_override: Path | None = None) -> CollectorConfig:
     d = tomllib.loads(path.read_text(encoding="utf-8"))
     hb, hp, st, hw = d.get("heartbeat", {}), d.get("host_probe", {}), d.get("status", {}), d.get("host_window")
-    window = None
+    window: AvailabilityWindow | None = None
     if hw is not None:
         window = HostWindow(
             start_tz=hw["start_tz"], start=parse_hhmm(hw["start"]),
             end_tz=hw["end_tz"], end=parse_hhmm(hw["end"]),
             weekdays=frozenset(hw.get("weekdays", sorted(WEEKDAYS))),
         )
+    aw = d.get("anchor_window", {})
+    anchor_window = None
+    if aw.get("enabled", False):
+        # 2026-09-15 维护者同意：按美股收盘期货锚点调整采集窗口（ADD-0 §15.3）
+        anchor_window = CloseWindow(CalendarProvider(path.parent / "calendar_overrides.toml"),
+                                    market=aw.get("market", "NASDAQ"), before_s=float(aw.get("before_s", 300)),
+                                    after_s=float(aw.get("after_s", 180)))
+        window = anchor_window if window is None else CompositeWindow((window, anchor_window))
     return CollectorConfig(
         data_root=(data_root_override or Path(d["data_root"])).expanduser(),
         run_label=d.get("run_label", "host"),
@@ -84,6 +97,7 @@ def load_collector_config(path: Path, data_root_override: Path | None = None) ->
         status_port=int(st.get("port", 8787)),
         status_lan_enabled=bool(st.get("lan_enabled", False)),
         host_window=window,
+        anchor_window=anchor_window,
     )
 
 
@@ -113,6 +127,7 @@ class Collector:
             thresholds={"min_disk_free_gb": cfg.min_disk_free_gb, "max_clock_offset_ms": cfg.max_clock_offset_ms},
             lan_status_enabled=cfg.status_enabled and cfg.status_lan_enabled,
             host_window=cfg.host_window,
+            anchor_window=cfg.anchor_window,
         )
         self.heartbeat_path = root / "state" / "heartbeat.json"
         self.writer: rawlog.RawLogWriter | None = None
@@ -126,6 +141,9 @@ class Collector:
             self.relative = new_state(repo_root, root, update_ledger=True)
             self.names = {f.code: f.name for f in self.relative.funds}
         self.snapshots = SnapshotStore(root)
+        self.anchor_store = AnchorStore(root)
+        self.anchors = AnchorTracker(cfg.anchor_window) if cfg.anchor_window is not None else None
+        self.anchor_check_interval_s = 5.0  # 到期（c+2 分钟）后最多延迟该秒数评估
 
     # ---------- 生命周期 ----------
 
@@ -141,6 +159,10 @@ class Collector:
                 self.events.emit("CALENDAR_UNCERTAIN", error=err)
             n = await asyncio.to_thread(replay_into, self.relative, root, now)
             self.events.emit("RELATIVE_BOOTSTRAP", messages=n)
+        if self.anchors is not None:
+            n = await asyncio.to_thread(self._bootstrap_anchors, root, now)
+            self.health.anchors_recent = self.anchor_store.recent()
+            self.events.emit("ANCHOR_BOOTSTRAP", samples=n)
         self.events.emit("START", run_id=self.run_id, pid=os.getpid(),
                          endpoints=[ep.request.endpoint_id for ep in self.endpoints])
 
@@ -156,6 +178,8 @@ class Collector:
             tasks = [asyncio.create_task(self._window_manager(), name="window")]
             tasks += [asyncio.create_task(self._poll(ep), name=ep.request.endpoint_id) for ep in self.endpoints]
             tasks.append(asyncio.create_task(self._heartbeat(), name="heartbeat"))
+            if self.anchors is not None:
+                tasks.append(asyncio.create_task(self._anchor_capture(), name="anchor_capture"))
             tasks.append(asyncio.create_task(self._host_probe(), name="host_probe"))
             if self.cfg.status_enabled:
                 tasks.append(asyncio.create_task(serve_status(
@@ -259,6 +283,8 @@ class Collector:
                 if parser is not None and msg.status == 200:
                     self.health.absorb_parse(parser(msg))
                 self._on_relative_input(msg)
+                if self.anchors is not None:
+                    self.anchors.ingest(msg)
                 delay = max(interval, state.backoff_s())
                 await self._sleep_until_next(started, delay)
         except DiskFull:
@@ -279,6 +305,30 @@ class Collector:
             if remaining <= 0 or not self._in_window(self.clock.now_utc_ns()):
                 return
             await self._sleep(min(remaining, MAX_WAIT_S))
+
+    # ---------- 美股收盘期货锚点（DS-09/10，VM-03） ----------
+
+    def _bootstrap_anchors(self, root: Path, now: int) -> int:
+        assert self.anchors is not None
+        days = [(datetime.fromtimestamp(now / 1e9, tz=UTC).date() - timedelta(days=i)).isoformat() for i in range(4, -1, -1)]
+        n = 0
+        for msg in rawlog.iter_messages(root, sources=["sina"], dates=days, end_utc_ns=now + 1):
+            if msg.endpoint_id == HF_ENDPOINT and self.anchors.ingest(msg):
+                n += 1
+        return n
+
+    async def _anchor_capture(self) -> None:
+        assert self.anchors is not None
+        done = await asyncio.to_thread(self.anchor_store.done, "sina:hf_NQ")
+        while not self.stop.is_set():
+            for result in self.anchors.due(self.clock.now_utc_ns(), done):
+                self.anchor_store.append(result, self.clock.now_utc_ns())
+                done.add(result.c_utc_ns)
+                self.events.emit("ANCHOR_CAPTURE", c_utc_ns=result.c_utc_ns, status=result.status, value=result.value,
+                                 lag_s=result.lag_s, candidates=result.candidates, roll_window=result.roll_window,
+                                 reasons=list(result.reason_codes))
+                self.health.anchors_recent = self.anchor_store.recent()
+            await self._sleep(self.anchor_check_interval_s)
 
     # ---------- 相对比较（MVP） ----------
 

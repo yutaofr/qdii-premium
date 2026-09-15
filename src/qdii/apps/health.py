@@ -50,6 +50,8 @@ class Health:
     in_window_gap_s: float = 0.0
     relative_snapshots: int = 0
     relative_last_bundle_id: str | None = None
+    anchors_recent: list[dict[str, Any]] = field(default_factory=list)
+    anchor_window: Any = None  # CloseWindow，展示下一次收盘锚点窗口
 
     def absorb_parse(self, result: ParseResult) -> None:
         for issue in result.issues:
@@ -73,6 +75,9 @@ class Health:
         out = []
         if self.blocklist.entries:
             out.append(f"端点已封禁：{', '.join(sorted(self.blocklist.entries))}")
+        if self.anchors_recent and self.anchors_recent[-1]["anchor"]["status"] not in ("READY",):
+            a = self.anchors_recent[-1]["anchor"]
+            out.append(f"最近一次美股收盘期货锚点 {a['status']}（{', '.join(a['reason_codes'])}）")
         if self.in_window_gap_s > 0:
             out.append(f"本次运行窗口内缺口累计 {self.in_window_gap_s:.0f} 秒（详见事件 COLLECTOR_GAP）")
         if not self.window_active:
@@ -97,6 +102,16 @@ class Health:
             out.append("心跳超过 90 秒未更新")
         return out
 
+    def _anchor_next(self, now_utc_ns: int) -> dict[str, Any] | None:
+        if self.anchor_window is None:
+            return None
+        try:
+            start, end = self.anchor_window.next_bounds(now_utc_ns)
+        except ValueError:
+            return {"error": "CALENDAR_UNCERTAIN"}
+        return {"start_utc_ns": start, "end_utc_ns": end,
+                "close_utc_ns": int(start + self.anchor_window.before_s * 1e9)}
+
     def _window_info(self, now_utc_ns: int) -> dict[str, Any]:
         if self.host_window is None:
             return {"configured": False, "active": True}
@@ -112,6 +127,8 @@ class Health:
             "warnings": self.warnings(now_utc_ns),
             "window": self._window_info(now_utc_ns),
             "relative_store": {"written": self.relative_snapshots, "last_bundle_id": self.relative_last_bundle_id},
+            "anchors": {"recent": [r["anchor"] for r in self.anchors_recent],
+                        "next_window": self._anchor_next(now_utc_ns)},
             "host": None if self.host is None else {
                 "power_source": self.host.power_source,
                 "ntp_offset_ms": self.host.ntp_offset_ms,

@@ -151,6 +151,16 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     rr.set_defaults(func=cmd_replay_relative)
 
+    ra = rp.add_parser("anchors", help="从原始日志重算美股收盘期货锚点并与锚点库比较")
+    ra.add_argument("--date", action="append", required=True, help="美东日期 YYYY-MM-DD，可重复")
+    ra.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    ra.set_defaults(func=cmd_replay_anchors)
+
+    an = sub.add_parser("anchors", help="查看最近的美股收盘期货锚点")
+    an.add_argument("--tail", type=int, default=10)
+    an.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    an.set_defaults(func=cmd_anchors)
+
     rs = sub.add_parser("research", help="Phase 0 研究工具").add_subparsers(dest="research_cmd", required=True)
     f = rs.add_parser("fetch-history", help="抓取 NAV / NDX / 中间价历史到 research 原始日志")
     f.add_argument("--since", required=True, type=date.fromisoformat)
@@ -201,6 +211,26 @@ def cmd_replay_relative(args: argparse.Namespace) -> int:
     report = verify(Path(args.data_root).expanduser(), repo, args.date, stream=args.stream, kind=args.kind)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return {"PASSED": 0, "NO_DATA": 3, "VERSION_CHANGED": 4}.get(report["status"], 1)
+
+
+def cmd_replay_anchors(args: argparse.Namespace) -> int:
+    from qdii.apps.replay_anchors import verify
+
+    repo = Path(__file__).resolve().parents[3]
+    report = verify(Path(args.data_root).expanduser(), repo, args.date)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return {"PASSED": 0, "NO_DATA": 3}.get(report["status"], 1)
+
+
+def cmd_anchors(args: argparse.Namespace) -> int:
+    from qdii.io.anchor_store import AnchorStore
+
+    for rec in AnchorStore(Path(args.data_root).expanduser()).recent(args.tail):
+        a = rec["anchor"]
+        lag = "—" if a["lag_s"] is None else f"{a['lag_s']:.1f}s"
+        print(f"{_bj(a['c_utc_ns'])} 北京  {a['status']:<8} {a['value'] or '—':>12}  距c {lag:>6}  样本 {a['candidates']:>3}"
+              f"  换月窗口 {'是' if a['roll_window'] else '否'}  {','.join(a['reason_codes'])}")
+    return 0
 
 
 def cmd_research_fetch(args: argparse.Namespace) -> int:

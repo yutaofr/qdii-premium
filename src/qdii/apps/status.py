@@ -91,6 +91,35 @@ def render_relative(rel: dict[str, Any] | None) -> str:
 {e(json.dumps(rel['versions'], ensure_ascii=False))}<br>{e(', '.join(rel['notes']))}</div></details>"""
 
 
+ANCHOR_CN = {"READY": "已捕获", "DEGRADED": "降级（距收盘 30—60 秒）", "FAILED": "失败（距收盘超过 60 秒）",
+             "MISSING": "漏采"}
+
+
+def render_anchors(anchors: dict[str, Any] | None) -> str:
+    """美股收盘期货锚点（DS-10：界面持续显示最近成功 c、合约身份、缺口）。"""
+    e = html.escape
+    if not anchors:
+        return ""
+    nxt = anchors.get("next_window") or {}
+    nxt_txt = ("日历不确定" if "error" in nxt else
+               f"收盘 {_fmt(nxt.get('close_utc_ns'))}；采集窗口 {_fmt(nxt.get('start_utc_ns'))} → {_fmt(nxt.get('end_utc_ns'))}"
+               if nxt else "—")
+    row_list = []
+    for a in reversed(anchors.get("recent") or []):
+        lag_txt = "—" if a["lag_s"] is None else f"{a['lag_s']:.0f}s"
+        row_list.append(
+            f"<tr class='{'' if a['status'] == 'READY' else 'bad'}'><td>{_fmt(a['c_utc_ns'])}</td>"
+            f"<td>{e(ANCHOR_CN.get(a['status'], a['status']))}</td><td>{e(str(a['value'] or '—'))}</td>"
+            f"<td>{lag_txt}</td><td>{a['candidates']}</td><td>{'是' if a['roll_window'] else '否'}</td>"
+            f"<td class='small'>{e(', '.join(a['reason_codes']))}</td></tr>")
+    rows = "".join(row_list)
+    return f"""<h2>美股收盘期货锚点（新浪 hf_NQ，合约月份未知）</h2>
+<p>下一次：{nxt_txt}。窗口期间请保持 Mac 开盖联网。</p>
+<div class="wrap"><table><tr><th>美股收盘 c</th><th>状态</th><th>买卖中间价</th><th>距 c</th><th>候选样本</th>
+<th>换月窗口</th><th>原因</th></tr>{rows or "<tr><td colspan='7'>尚无记录</td></tr>"}</table></div>
+<p class="small">锚点用于后续绝对估算（E 路径）；合约月份未知（CONTRACT_UNKNOWN），换月窗口内的锚点不能跨序列使用。</p>"""
+
+
 def render_html(snap: dict[str, Any]) -> str:
     e = html.escape
     warn = "".join(f"<li>{e(w)}</li>" for w in snap["warnings"]) or "<li>无</li>"
@@ -131,6 +160,7 @@ td,th{{border:1px solid #ddd;padding:4px 8px;text-align:left;white-space:nowrap}
 .small{{font-size:12px;color:#666;white-space:normal}}.notice{{background:#fff8e1;padding:8px;border-left:3px solid #f0a000}}.muted td{{color:#999}}details{{white-space:normal}}</style></head><body>
 <h1 style="font-size:18px">纳指100 QDII ETF 相对比较</h1>
 {render_relative(snap.get('relative'))}
+{render_anchors(snap.get('anchors'))}
 <h2>采集状态</h2>
 <p>运行 {e(snap['run_id'])}；启动 {_fmt(snap['started_utc_ns'])}；心跳 {_fmt(snap['last_heartbeat_utc_ns'])}</p>
 <p>采集窗口：{'进行中' if snap['window']['active'] else '未开'}；

@@ -51,5 +51,6 @@ def test_invalid_window_rejected():
 
 def test_repo_collector_config_has_paris_window():
     cfg = load_collector_config(REPO / "config" / "collector.toml")
-    assert cfg.host_window == W
+    assert cfg.host_window.parts[0] == W
+    assert cfg.anchor_window is cfg.host_window.parts[1] and cfg.anchor_window.before_s == 300
     assert cfg.status_lan_enabled is False
