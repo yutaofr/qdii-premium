@@ -628,7 +628,7 @@ flowchart LR
 
 输入包升级为 schema 2（新增最新价、归一化因子及其消息 ID、日历覆盖标记、完整策略参数、分项边界）。schema 1 的快照不再被回放接受；生产环境中此前没有 schema 1 快照写盘。
 
-### 16.5 二审修正（2026-09-15，见 reports/mvp/review-2026-09-15-round2-response.md）
+### 16.5 二审、三审修正（2026-09-15，见 reports/mvp/review-2026-09-15-round2-response.md、review-2026-09-15-round3-response.md）
 
 | ADR | 决策 | 理由 |
 |---|---|---|
@@ -637,6 +637,7 @@ flowchart LR
 | 032 | 行情先按接收时间校验（供应商时间领先接收超过 2 秒即拒绝），通过后才参与"按供应商时间取最新"；拒绝次数计入审计 | 二审 F3：单调最新指针被未来时间占住后，正常行情无法恢复 |
 | 033 | 状态页展示的完整输入包按 bundle_id 放入内存有界缓存（64 个），下载路由为 `/relative/bundle/<bundle_id>.json`；未缓存返回 404，不重新构包；取消无 id 的下载路由 | 二审 F4：按新请求时刻重新构包得到的是另一个快照 |
 | 034 | 锚点交易日数与锚点日历覆盖按成员计算；边界只存单日 P95，成员对按 √max(1, k_i, k_j) 放大；任一成员锚点 EXTENDED/INVALID 时仅该成员对降为 MODEL_REFERENCE；组级锚点健康只取参与比较的成员；输入包 `calendar_covered` 只表示截止日 | 二审 F5：被剔除成员的旧锚点不得污染其余成员 |
+| 035 | 日历的所有公开查询经唯一入口 `_resolve`：全局或该日历不确定、市场名无法解析时返回空并按未覆盖降级；竞价时间只接受严格 HH:MM；台账不可读时全部市场不确定且不改写台账；以模糊测试固定"不抛出、拒绝即全面降级"不变式 | 三审 C1/C2：逐项校验在两轮评审中各漏一类输入，改为入口统一和不变式测试 |
 
 输入包升级为 schema 3（成员级 `anchor_sessions`、`anchor_calendar_covered`、`index_date`、`fx_date`；删除组级 `sessions_since_anchor`；边界字段改为单日 P95）。回放遇到旧结构快照时报 VERSION_CHANGED，不崩溃也不计为通过；生产快照库此前没有 schema 2 记录。
 

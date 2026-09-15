@@ -108,7 +108,25 @@ BAD_OVERRIDES = {
     "closure_toml_date": BASE + CLOSURE.replace('date = "2026-09-16"', "date = 2026-09-16"),
     "closure_not_array": BASE + "\nclosure = 1\n",
     "closure_empty_source": BASE + CLOSURE.replace('"https://example.invalid/temporary-closure"', '""'),
+    # 三审 C1：time.fromisoformat 接受的其他 ISO 变体一律拒绝
+    "opening_with_utc_offset": BASE.replace('opening = ["09:15", "09:25"]', 'opening = ["09:15+01:00", "09:25"]', 1),
+    "opening_with_seconds": BASE.replace('opening = ["09:15", "09:25"]', 'opening = ["09:15:00", "09:25"]', 1),
+    "opening_single_digit_hour": BASE.replace('opening = ["09:15", "09:25"]', 'opening = ["9:15", "09:25"]', 1),
+    "opening_hour_24": BASE.replace('opening = ["09:15", "09:25"]', 'opening = ["09:15", "24:00"]', 1),
+    "auction_tz_is_directory": BASE.replace('tz = "Asia/Shanghai"', 'tz = "America"', 1),
 }
+
+MARKETS = ("SSE", "SZSE", "NASDAQ", "XSHG")
+
+
+def assert_degrades_everywhere(cal):
+    """三审 C2：不只验证 covers，所有公开查询在所有市场上都结构化降级、不抛出。"""
+    for market in MARKETS:
+        assert cal.phase(market, ns(2026, 9, 15, 2, 0)) == (MarketPhase.UNKNOWN, None, False), market
+        assert not cal.covers(market, date(2026, 9, 14))
+        assert cal.session(market, date(2026, 9, 14)) is None
+        assert cal.sessions_between(market, date(2026, 9, 11), date(2026, 9, 15)) == []
+        assert cal.last_session_on_or_before(market, date(2026, 9, 14)) is None
 
 
 @pytest.mark.parametrize("name", sorted(BAD_OVERRIDES))
@@ -117,10 +135,28 @@ def test_f2_invalid_override_structure_rejected_without_exception(tmp_path, name
     ov.write_text(BAD_OVERRIDES[name], encoding="utf-8")
     cal = CalendarProvider(ov)  # 不得抛出
     assert cal.errors and "+UNCERTAIN" in cal.version
-    phase, session, covered = cal.phase("SSE", ns(2026, 9, 15, 2, 0))
-    assert (phase, session, covered) == (MarketPhase.UNKNOWN, None, False)
-    assert not cal.covers("NASDAQ", date(2026, 9, 14))
-    assert cal.last_session_on_or_before("NASDAQ", date(2026, 9, 14)) is None
+    assert_degrades_everywhere(cal)
+
+
+def test_c2_unknown_market_with_valid_overrides_degrades_and_is_recorded():
+    cal = CalendarProvider(REPO / "config" / "calendar_overrides.toml")
+    assert cal.phase("NOPE", ns(2026, 9, 15, 2, 0)) == (MarketPhase.UNKNOWN, None, False)
+    assert cal.sessions_between("NOPE", date(2026, 9, 11), date(2026, 9, 15)) == []
+    assert cal.session("NOPE", date(2026, 9, 14)) is None
+    assert any("unknown market 'NOPE'" in e for e in cal.errors)
+    assert cal.phase("SZSE", ns(2026, 9, 15, 2, 0))[0] is MarketPhase.CONTINUOUS  # 其他市场不受影响
+
+
+@pytest.mark.parametrize("content", ["{not json", '["XSHG"]', '{"XSHG": "2026-09-16"}', '{"XSHG": ["2026-13-40"]}',
+                                     '{"NOPE": ["2026-09-16"]}', '{"SSE": ["2026-09-16"]}'])
+def test_unreadable_ledger_makes_all_markets_uncertain_and_is_not_rewritten(tmp_path, content):
+    ov, ledger = tmp_path / "ov.toml", tmp_path / "ledger.json"
+    ov.write_text(BASE + CLOSURE, encoding="utf-8")
+    ledger.write_text(content, encoding="utf-8")
+    cal = CalendarProvider(ov, ledger_path=ledger, update_ledger=True)
+    assert any("ledger unreadable" in e for e in cal.errors) and "+UNCERTAIN" in cal.version
+    assert_degrades_everywhere(cal)
+    assert ledger.read_text(encoding="utf-8") == content
 
 
 def test_f2_full_closure_record_with_optional_fields_accepted(tmp_path):

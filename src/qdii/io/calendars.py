@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import re
 import tomllib
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -99,13 +100,21 @@ def _text(value: object, where: str) -> str:
     return value
 
 
+HHMM = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
+
+
+def _hhmm(value: object, where: str) -> time:
+    """严格 HH:MM（本地钟面时间，时区由同表 tz 给出）；不接受秒、偏移或其他 ISO 变体（三审 C1）。"""
+    match = HHMM.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
+        raise CalendarOverrideError(f"{where}: expected \"HH:MM\", got {value!r}")
+    return time(int(match.group(1)), int(match.group(2)))
+
+
 def _interval(value: object, where: str) -> tuple[time, time]:
     if not isinstance(value, list) or len(value) != 2:
         raise CalendarOverrideError(f"{where}: expected [\"HH:MM\", \"HH:MM\"]")
-    try:
-        start, end = (time.fromisoformat(_text(x, where)) for x in value)
-    except ValueError as exc:
-        raise CalendarOverrideError(f"{where}: bad time ({exc})") from exc
+    start, end = (_hhmm(x, where) for x in value)
     if not start < end:
         raise CalendarOverrideError(f"{where}: start must be before end")
     return start, end
@@ -167,12 +176,26 @@ def _parse_overrides(raw: bytes) -> Overrides:
         tz = _text(a["tz"], f"{where}.tz")
         try:
             ZoneInfo(tz)
-        except (ValueError, KeyError) as exc:  # ZoneInfoNotFoundError 是 KeyError 子类
+        except (ValueError, KeyError, OSError) as exc:  # 未找到为 KeyError 子类；"America" 等目录名为 OSError
             raise CalendarOverrideError(f"{where}.tz: unknown zone {tz!r}") from exc
         opening = _interval(a["opening"], f"{where}.opening")
         closing = _interval(a["closing"], f"{where}.closing") if "closing" in a else None
         auctions[market] = AuctionRule(tz, opening, closing)
     return Overrides(aliases, tuple(closures), auctions)
+
+
+def _read_ledger(path: Path) -> dict[str, list[date]]:
+    if not path.exists():
+        return {}
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict) or not all(isinstance(v, list) and all(isinstance(x, str) for x in v)
+                                            for v in doc.values()):
+        raise ValueError("ledger must map calendar name to a list of ISO dates")
+    known = set(xcals.get_calendar_names(include_aliases=False))  # 台账只写解析后的日历名
+    unknown = sorted(set(doc) - known)
+    if unknown:
+        raise ValueError(f"ledger has unknown calendars {unknown}")
+    return {k: [date.fromisoformat(x) for x in v] for k, v in doc.items()}
 
 
 class CalendarProvider:
@@ -205,11 +228,16 @@ class CalendarProvider:
         return self._aliases.get(market, market)
 
     def _check_ledger(self, path: Path, update: bool) -> None:
-        ledger = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        try:
+            ledger = _read_ledger(path)
+        except (OSError, UnicodeDecodeError, ValueError, xcals.errors.InvalidCalendarName) as exc:
+            # 台账不可读就无法判断回退：全部市场不确定，且不改写台账
+            self.errors.append(f"closure ledger unreadable: {exc}")
+            self._uncertain.add("*")
+            return
         for cal_name, days in ledger.items():
             cal = xcals.get_calendar(cal_name)
-            for d_str in days:
-                d = date.fromisoformat(d_str)
+            for d in days:
                 still_closed = d in self._closed.get(cal_name, set())
                 library_closed = (cal.first_session.date() <= d <= cal.last_session.date()
                                   and not cal.is_session(pd.Timestamp(d)))
@@ -217,30 +245,44 @@ class CalendarProvider:
                     self.errors.append(f"known closure {cal_name} {d} removed by overrides (rollback rejected)")
                     self._uncertain.add(cal_name)
         if update and not self._uncertain:
-            merged = {k: sorted(set(ledger.get(k, [])) | {d.isoformat() for d in v})
+            merged = {k: sorted({d.isoformat() for d in ledger.get(k, [])} | {d.isoformat() for d in v})
                       for k, v in {**{k: set() for k in ledger}, **self._closed}.items()}
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(path)
 
-    def _cal(self, market: str) -> xcals.ExchangeCalendar:
+    def _resolve(self, market: str) -> xcals.ExchangeCalendar | None:
+        """所有公开查询的唯一入口（三审 C2）：先判不确定状态，再解析日历。
+
+        覆盖文件整份拒绝（别名随之失效）、该日历回退被拒、或市场名无法解析时返回 None，
+        调用方一律按未覆盖降级，不向上抛异常。
+        """
+        if "*" in self._uncertain:
+            return None  # AT58/60：覆盖文件非法或台账不可读，所有市场不确定
         name = self._name(market)
+        if name in self._uncertain:
+            return None
         if name not in self._cals:
-            self._cals[name] = xcals.get_calendar(name)
+            try:
+                self._cals[name] = xcals.get_calendar(name)
+            except xcals.errors.InvalidCalendarName:
+                message = f"unknown market {market!r} (calendar {name!r})"
+                if message not in self.errors:
+                    self.errors.append(message)
+                return None
         return self._cals[name]
 
     def covers(self, market: str, d: date) -> bool:
-        if "*" in self._uncertain or self._name(market) in self._uncertain:
-            return False  # AT58/60：覆盖文件非法或不一致回退，受影响市场不确定
-        cal = self._cal(market)
-        return cal.first_session.date() <= d <= cal.last_session.date()
+        cal = self._resolve(market)
+        return cal is not None and cal.first_session.date() <= d <= cal.last_session.date()
 
     def session(self, market: str, d: date) -> Session | None:
         """d 为交易日则返回会话；非交易日返回 None。调用方须先确认 covers()。"""
-        if not self.covers(market, d) or d in self._closed.get(self._name(market), set()):
+        cal = self._resolve(market)
+        if cal is None or not self.covers(market, d) or d in self._closed.get(self._name(market), set()):
             return None
-        cal, ts = self._cal(market), pd.Timestamp(d)
+        ts = pd.Timestamp(d)
         if not cal.is_session(ts):
             return None
         has_break = cal.has_break and not pd.isna(cal.session_break_start(ts))
@@ -261,18 +303,20 @@ class CalendarProvider:
         return None
 
     def sessions_between(self, market: str, after: date, through: date) -> list[date]:
-        """(after, through] 内的交易日。"""
-        cal = self._cal(market)
+        """(after, through] 内的交易日；任一端未覆盖时为空。"""
+        cal = self._resolve(market)
+        if cal is None or not (self.covers(market, after) and self.covers(market, through)):
+            return []
         out = [s.date() for s in cal.sessions_in_range(pd.Timestamp(after), pd.Timestamp(through))
                if s.date() > after]
-        if not (self.covers(market, after) and self.covers(market, through)):
-            return []
         closed = self._closed.get(self._name(market), set())
         return [d for d in out if d not in closed]
 
     def phase(self, market: str, utc_ns: int) -> tuple[MarketPhase, Session | None, bool]:
         """返回 (阶段, 当日会话, 日历是否覆盖)。未覆盖时阶段为 UNKNOWN（CALENDAR_UNCERTAIN）。"""
-        cal = self._cal(market)
+        cal = self._resolve(market)
+        if cal is None:
+            return MarketPhase.UNKNOWN, None, False
         local = datetime.fromtimestamp(utc_ns / 1e9, tz=ZoneInfo(str(cal.tz)))
         d = local.date()
         if not self.covers(market, d):
