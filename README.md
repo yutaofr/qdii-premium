@@ -1,6 +1,6 @@
 # qdii-premium
 
-纳指100 QDII ETF 相对估值与溢价监测。当前状态：**相对比较研究预览（R 路径）**：只回答五只中谁相对便宜，**不提供绝对估算溢价，不能据此判断是否满足买入条件**；Phase 0 真实会话积累中。
+纳指100 QDII ETF 溢价监测。当前状态：研究预览。A 股交易时段提供**估算溢价**（纳指期货实时价相对昨结算的涨跌 + 即期汇率推算估算净值；期货锚点为昨结算代理，尚未验证，见勘误 E8）与五只之间的**相对比较**；Phase 0 真实会话积累中。
 
 - MVP 验收：[reports/mvp/acceptance.md](reports/mvp/acceptance.md)；评审与处理：[review](reports/mvp/review-2026-09-15.md)、[response](reports/mvp/review-2026-09-15-response.md)
 
@@ -33,9 +33,10 @@
 | `qdii.io.snapshot_store` | 相对比较快照只追加 JSONL（ADR-018） |
 | `qdii.apps.replay_relative` | `qdii replay relative`：输入包重算 / 流回放逐包比对 |
 | `qdii.contracts.sina_hf_v1`、`qdii.core.anchor`、`qdii.pipeline.anchor_capture`、`qdii.io.anchor_store` | 美股收盘期货锚点：hf_NQ 解析、VM-03 选取、到期评估、只追加锚点库（ADD-0 §17） |
-| `qdii.pipeline.host_windows` | A 股窗口 + 按日历计算的美股收盘窗口组合 |
+| `qdii.pipeline.host_windows` | A 股窗口 + 按日历计算的美股收盘窗口组合（收盘窗口已停用） |
+| `qdii.core.enav`、`qdii.contracts.sina_hf_v2`、`qdii.contracts.cfets_fx_spot_v1` | 盘中估算净值与估算溢价（ADR-036）：昨结算代理锚点、CFETS 即期汇率 |
 
-未实现（MVP 范围外）：绝对估值（E/V 路径）、价格机会通知、基金公告监控、SQLite 规范化存储。
+未实现：估算溢价的误差范围（需与官方净值对比积累）、价格机会通知、基金公告监控、SQLite 规范化存储。
 
 ## 使用
 

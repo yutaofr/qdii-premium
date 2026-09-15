@@ -1,0 +1,183 @@
+"""盘中估算净值（勘误 E8）：纯函数公式与降级、契约（昨结算、CFETS 即期）、状态层 as-of 与输入包回放、页面。"""
+
+import json
+from dataclasses import replace
+from datetime import date, datetime
+from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from qdii.apps.relative_snapshot import render, view
+from qdii.apps.status import render_html
+from qdii.contracts import cfets_fx_spot_v1, sina_hf_v2
+from qdii.core.enav import EnavInput, EnavPolicy, evaluate_enav
+from qdii.core.relative_bundle import bundle_from_dict, bundle_id, canonical_json, evaluate_bundle
+from qdii.core.types import PriceType, ReasonCode
+from tests.helpers import make_msg, recorded_sina
+from tests.unit.test_relative_bundle_state import bj, factor_msgs, fed_state
+
+SH = ZoneInfo("Asia/Shanghai")
+C_0914 = int(datetime(2026, 9, 14, 20, 0, tzinfo=ZoneInfo("UTC")).timestamp() * 1e9)  # 09-14 16:00 ET
+T = bj(14, 49, 55)
+
+BASE = EnavInput(
+    code="A", price=2.2, quote_time_utc_ns=T, nav=2.0, nav_usable=True, index_date=date(2026, 9, 11),
+    index_at_anchor=29368.44, fx_at_anchor=6.7743, us_close_date=date(2026, 9, 14), us_close_utc_ns=C_0914,
+    index_at_close=29127.16, futures_mid=29058.375, futures_settle=29152.25, futures_time_utc_ns=T - 4 * 10**9,
+    fx_spot=6.7136, fx_time_utc_ns=T - 8 * 10**9,
+)
+
+
+# ---------- 纯函数 ----------
+
+def test_enav_formula_and_disclosed_proxy_reasons():
+    r = evaluate_enav(BASE, EnavPolicy())
+    expected = 2.0 * (29127.16 / 29368.44) * (29058.375 / 29152.25) * (6.7136 / 6.7743)
+    assert r.status == "PROXY_ANCHOR" and r.enav == pytest.approx(expected, rel=1e-12)
+    assert r.premium == pytest.approx(2.2 / expected - 1, rel=1e-12)
+    assert r.basis == pytest.approx(29152.25 / 29127.16 - 1) and r.futures_age_s == 4 and r.fx_age_s == 8
+    assert set(r.reasons) == {ReasonCode.SETTLEMENT_ANCHOR_PROXY, ReasonCode.CONTRACT_UNKNOWN,
+                              ReasonCode.FULL_EXPOSURE_ASSUMPTION}
+
+
+def test_nav_already_at_last_us_close_has_no_index_move():
+    r = evaluate_enav(replace(BASE, index_date=date(2026, 9, 14), index_at_anchor=29127.16), EnavPolicy())
+    assert r.index_move == 1.0 and r.status == "PROXY_ANCHOR"
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    ({"nav": None}, ReasonCode.NAV_MISSING),
+    ({"nav_usable": False}, ReasonCode.NAV_REJECTED),
+    ({"index_at_anchor": None}, ReasonCode.NAV_FX_RULE_UNKNOWN),
+    ({"index_at_close": None}, ReasonCode.INDEX_CLOSE_MISSING),
+    ({"us_close_date": date(2026, 9, 10)}, ReasonCode.ANCHOR_INVALID),
+    ({"price": None}, ReasonCode.QUOTE_MISSING),
+    ({"futures_settle": None}, ReasonCode.FUTURE_ANCHOR_MISSING),
+    ({"futures_time_utc_ns": T - 61 * 10**9}, ReasonCode.TIME_SKEW),
+    ({"quote_time_utc_ns": C_0914 + 3600 * 10**9, "futures_time_utc_ns": C_0914 + 3596 * 10**9,
+      "fx_time_utc_ns": C_0914 + 3590 * 10**9}, ReasonCode.FUTURE_ANCHOR_MISSING),  # 收盘后 1 小时：昨结算尚未滚动到 c
+    ({"fx_spot": None}, ReasonCode.FX_MISSING),
+    ({"fx_time_utc_ns": T - 121 * 10**9}, ReasonCode.FX_STALE),
+    ({"futures_settle": 29127.16 * 0.99}, ReasonCode.SETTLEMENT_BASIS_SUSPECT),
+    ({"futures_settle": 29127.16 * 1.04}, ReasonCode.SETTLEMENT_BASIS_SUSPECT),
+])
+def test_missing_or_failed_input_makes_enav_unavailable_with_reason(change, reason):
+    r = evaluate_enav(replace(BASE, **change), EnavPolicy())
+    assert r.status == "UNAVAILABLE" and r.enav is None and r.premium is None and reason in r.reasons
+
+
+# ---------- 契约 ----------
+
+def test_sina_hf_v2_adds_previous_settlement_from_recorded_sample():
+    msg = replace(recorded_sina("hf_NQ", "referer"), endpoint_id="sina.hf_NQ")
+    recs = {r.price_type: r for r in sina_hf_v2.parse(msg).records}
+    settle = recs[PriceType.SETTLE]
+    assert settle.value is not None and settle.value > 0
+    assert settle.provider_time == recs[PriceType.BID].provider_time
+    assert {ReasonCode.CONTRACT_UNKNOWN, ReasonCode.SETTLEMENT_ANCHOR_PROXY} <= set(settle.reason_codes)
+
+
+def cfets_body(show="2026-09-15 14:49:47", bid="6.7131", ask="6.7132", code="200"):
+    return json.dumps({"head": {"rep_code": code}, "data": {"showDateCN": show}, "records": [
+        {"bidPrc": "---", "askPrc": "---", "ccyPair": "EUR/CNY"},
+        {"bidPrc": bid, "askPrc": ask, "midprice": "---", "time": "", "ccyPair": "USD/CNY"}]}).encode()
+
+
+def test_cfets_spot_contract():
+    recs = {r.price_type: r for r in cfets_fx_spot_v1.parse(make_msg(cfets_body(), source_id="cfets")).records}
+    assert recs[PriceType.BID].value == Decimal("6.7131") and recs[PriceType.ASK].value == Decimal("6.7132")
+    assert recs[PriceType.BID].provider_time.utc_ns == bj(14, 49, 47)
+    empty = cfets_fx_spot_v1.parse(make_msg(cfets_body(bid="---", ask="---"), source_id="cfets")).records
+    assert all(r.value is None and ReasonCode.QUOTE_MISSING in r.reason_codes for r in empty)
+    assert cfets_fx_spot_v1.parse(make_msg(cfets_body(code="500"), source_id="cfets")).records == ()
+    assert cfets_fx_spot_v1.parse(make_msg(b"<html>", source_id="cfets")).issues
+
+
+# ---------- 状态层、输入包、页面 ----------
+
+def hf(t_bj, bid, ask, settle, received, seq):
+    local = datetime.fromtimestamp(t_bj / 1e9, tz=SH)
+    f = ["0", "", bid, ask, "", "", local.strftime("%H:%M:%S"), settle, "", "", "", "", local.strftime("%Y-%m-%d"),
+         "纳斯达克指数期货", ""]
+    return make_msg(f'var hq_str_hf_NQ="{",".join(f)}";'.encode("gb18030"), received_utc_ns=received, seq=seq,
+                    run_id="LIVE-test", endpoint_id="sina.hf_NQ")
+
+
+def fx(show_ns, bid, ask, received, seq):
+    show = datetime.fromtimestamp(show_ns / 1e9, tz=SH).strftime("%Y-%m-%d %H:%M:%S")
+    return make_msg(cfets_body(show, bid, ask), received_utc_ns=received, seq=seq, source_id="cfets",
+                    run_id="LIVE-test", endpoint_id="cfets.fx_spot_quot")
+
+
+def enav_state():
+    st = fed_state()  # 五只基金净值 09-11，14:49:55 卖一 2.300
+    ndx = [("2026-09-11", "29,368.44"), ("2026-09-14", "29,127.16")]
+    for msg in factor_msgs(ndx, [("2026-09-11", "6.7743"), ("2026-09-14", "6.7698")]):
+        st.ingest(msg)
+    st.ingest(hf(bj(14, 49, 50), "29058.25", "29058.50", "29152.25", bj(14, 49, 51), 90))
+    st.ingest(fx(bj(14, 49, 47), "6.7131", "6.7132", bj(14, 49, 49), 91))
+    return st
+
+
+def test_state_supplies_enav_inputs_and_bundle_replays():
+    b = enav_state().bundle(bj(14, 50))
+    assert (b.us_close_date, b.us_close_index) == ("2026-09-14", "29127.16")
+    m = b.members[0]
+    assert (m.futures_mid, m.futures_settle, m.fx_spot) == ("29058.375", "29152.25", "6.71315")
+    snap = evaluate_bundle(b)
+    assert {x.status for x in snap.enav} == {"PROXY_ANCHOR"}
+    x = next(x for x in snap.enav if x.code == m.code)
+    expected = float(m.nav) * (29127.16 / 29368.44) * (29058.375 / 29152.25) * (6.71315 / 6.7743)
+    assert x.enav == pytest.approx(expected, rel=1e-12) and x.premium == pytest.approx(2.3 / expected - 1, rel=1e-12)
+    again = bundle_from_dict(json.loads(canonical_json(b)))
+    assert again == b and bundle_id(again) == bundle_id(b)
+
+
+def test_futures_sample_is_taken_as_of_member_quote_time():
+    st = enav_state()
+    st.ingest(hf(bj(14, 49, 58), "29999.00", "29999.25", "29152.25", bj(14, 49, 59), 92))  # 晚于成员报价 14:49:55
+    m = st.bundle(bj(14, 50)).members[0]
+    assert m.futures_mid == "29058.375"  # 不用报价之后的期货样本（as-of）
+
+
+def test_future_timestamped_futures_tick_rejected():
+    st = enav_state()
+    before = st.future_rejected
+    st.ingest(hf(bj(15, 0), "1.00", "1.25", "29152.25", bj(14, 49, 52), 93))
+    assert st.future_rejected == before + 1 and st.futures[-1].t == bj(14, 49, 50)
+
+
+def test_missing_index_close_for_last_us_session_disables_enav_not_ranking():
+    st = fed_state()
+    for msg in factor_msgs([("2026-09-11", "29,368.44")], [("2026-09-11", "6.7743")]):
+        st.ingest(msg)
+    st.ingest(hf(bj(14, 49, 50), "29058.25", "29058.50", "29152.25", bj(14, 49, 51), 90))
+    st.ingest(fx(bj(14, 49, 47), "6.7131", "6.7132", bj(14, 49, 49), 91))
+    b = st.bundle(bj(14, 50))
+    snap = evaluate_bundle(b)
+    assert "enav:index_close_missing:2026-09-14" in b.notes
+    assert all(ReasonCode.INDEX_CLOSE_MISSING in x.reasons for x in snap.enav)
+    assert sum(1 for m in snap.result.members if m.eligible) == 5  # 相对比较不受影响
+
+
+def test_cli_and_status_page_show_estimated_premium():
+    st = enav_state()
+    b = st.bundle(bj(14, 50))
+    snap = evaluate_bundle(b)
+    names = {f.code: f.name for f in st.funds}
+    text = render(snap, b, names)
+    assert "估算溢价" in text and "昨结算 29152.25" in text
+    rel = view(snap, b, names)
+    assert rel["absolute_premium_available"] is True
+    page = render_html({"run_id": "t", "started_utc_ns": 0, "last_heartbeat_utc_ns": None, "warnings": [],
+                        "window": {"active": True}, "host": None, "endpoints": [], "etf": {}, "parse_issues": {},
+                        "events_recent": [], "relative": rel})
+    assert "估算溢价" in page and "估算净值" in page and "基差" in page
+
+
+def test_closing_reference_viewed_after_us_close_keeps_the_close_before_the_snapshot():
+    st = enav_state()
+    b = st.bundle(bj(5, 0, day=16))  # 09-16 凌晨查看：09-15 美股已收盘，但展示的仍是 09-15 14:49:55 的快照
+    assert b.mode == "CLOSING_REFERENCE" and b.us_close_date == "2026-09-14"
+    assert {x.status for x in evaluate_bundle(b).enav} == {"PROXY_ANCHOR"}

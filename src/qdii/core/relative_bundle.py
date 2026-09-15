@@ -16,6 +16,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+from qdii.core.enav import EnavInput, EnavPolicy, EnavResult, evaluate_enav
 from qdii.core.relative import (
     HEALTH_ORDER,
     GroupResult,
@@ -28,7 +29,7 @@ from qdii.core.relative import (
 )
 from qdii.core.types import ReasonCode
 
-SCHEMA_VERSION = 3  # v3（二审）：成员级锚点交易日数与日历覆盖、因子实际日期；边界按成员对放大
+SCHEMA_VERSION = 4  # v4（勘误 E8）：盘中估算净值输入（期货中点/昨结算、即期汇率、最近美股收盘）
 FLOAT_TOLERANCE = 1e-10
 
 
@@ -53,6 +54,13 @@ class MemberSpec:
     fx_date: str | None = None  # X0 实际对应的中间价日期
     anchor_sessions: int | None = None  # 该成员净值日之后已完成的 A 股交易日数
     anchor_calendar_covered: bool = True  # 该成员锚点日期在日历覆盖范围内
+    futures_mid: str | None = None  # F(t)：按成员报价时刻 as-of 的 hf_NQ 买卖价中点
+    futures_settle: str | None = None  # F(c)：同一行情行的昨结算（代理锚点）
+    futures_time_utc_ns: int | None = None
+    futures_msg_id: str | None = None
+    fx_spot: str | None = None  # X(t)：CFETS USD/CNY 即期买卖价中点
+    fx_time_utc_ns: int | None = None
+    fx_msg_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +76,11 @@ class RelativeBundle:
     bounds: tuple[tuple[str, str, float, float, str], ...]  # (i, j, daily_p95_bp, rounding_bp, source)，i<j
     versions: tuple[tuple[str, str], ...]
     notes: tuple[str, ...] = ()
+    us_close_date: str | None = None  # c：截止前最近已收盘的美股交易日
+    us_close_utc_ns: int | None = None
+    us_close_index: str | None = None  # I(c)
+    us_close_msg_id: str | None = None
+    enav_policy: tuple[tuple[str, float | str], ...] = ()
 
 
 def canonical_json(bundle: RelativeBundle) -> str:
@@ -84,6 +97,8 @@ def bundle_from_dict(d: dict[str, Any]) -> RelativeBundle:
     return RelativeBundle(
         schema=d["schema"], cutoff_utc_ns=d["cutoff_utc_ns"], mode=d["mode"], price_basis=d["price_basis"],
         policy=tuple((k, v) for k, v in d["policy"]), calendar_covered=d["calendar_covered"],
+        us_close_date=d["us_close_date"], us_close_utc_ns=d["us_close_utc_ns"], us_close_index=d["us_close_index"],
+        us_close_msg_id=d["us_close_msg_id"], enav_policy=tuple((k, v) for k, v in d["enav_policy"]),
         model_status=d["model_status"],
         members=tuple(MemberSpec(**{**m, "nav_reasons": tuple(m["nav_reasons"]),
                                     "anchor_factor_msg_ids": tuple(m["anchor_factor_msg_ids"])})
@@ -139,6 +154,7 @@ class RelativeSnapshot:
     bundle_id: str
     result: GroupResult
     quality: RelativeQuality
+    enav: tuple[EnavResult, ...] = ()
 
 
 def evaluate_bundle(bundle: RelativeBundle) -> RelativeSnapshot:
@@ -218,7 +234,28 @@ def evaluate_bundle(bundle: RelativeBundle) -> RelativeSnapshot:
         reason_codes=tuple(r.value for r in result.reasons),
         members=mq,
     )
-    return RelativeSnapshot(bundle_id(bundle), result, quality)
+    return RelativeSnapshot(bundle_id(bundle), result, quality, _enav(bundle))
+
+
+def _num(x: str | None) -> float | None:
+    return float(x) if x is not None else None
+
+
+def _enav(bundle: RelativeBundle) -> tuple[EnavResult, ...]:
+    policy = EnavPolicy(**dict(bundle.enav_policy))
+    c = date.fromisoformat(bundle.us_close_date) if bundle.us_close_date else None
+    return tuple(
+        evaluate_enav(EnavInput(
+            code=m.code, price=_num(m.price), quote_time_utc_ns=m.quote_time_utc_ns, nav=_num(m.nav),
+            nav_usable=m.nav_verified and not m.nav_reasons,
+            index_date=date.fromisoformat(m.index_date) if m.index_date else None,
+            index_at_anchor=_num(m.index_at_anchor), fx_at_anchor=_num(m.fx_at_anchor),
+            us_close_date=c, us_close_utc_ns=bundle.us_close_utc_ns, index_at_close=_num(bundle.us_close_index),
+            futures_mid=_num(m.futures_mid), futures_settle=_num(m.futures_settle),
+            futures_time_utc_ns=m.futures_time_utc_ns, fx_spot=_num(m.fx_spot), fx_time_utc_ns=m.fx_time_utc_ns,
+        ), policy)
+        for m in bundle.members
+    )
 
 
 # ---------- 序列化与确定性比较 ----------
@@ -237,7 +274,7 @@ def to_plain(obj: Any) -> Any:
 
 def snapshot_to_dict(snap: RelativeSnapshot) -> dict[str, Any]:
     return {"bundle_id": snap.bundle_id, "result": to_plain(asdict(snap.result)),
-            "quality": to_plain(asdict(snap.quality))}
+            "quality": to_plain(asdict(snap.quality)), "enav": to_plain([asdict(x) for x in snap.enav])}
 
 
 def diff_plain(a: Any, b: Any, path: str = "", tol: float = FLOAT_TOLERANCE) -> list[str]:

@@ -51,6 +51,6 @@ def test_invalid_window_rejected():
 
 def test_repo_collector_config_has_paris_window():
     cfg = load_collector_config(REPO / "config" / "collector.toml")
-    assert cfg.host_window.parts[0] == W
-    assert cfg.anchor_window is cfg.host_window.parts[1] and cfg.anchor_window.before_s == 300
+    assert cfg.host_window == W  # 勘误 E8：只有 A 股窗口，不再要求主机在美股收盘时醒着
+    assert cfg.anchor_window is None
     assert cfg.status_lan_enabled is False

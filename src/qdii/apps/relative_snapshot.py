@@ -90,9 +90,11 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
                            "rounding_bp": p.rounding_bp, "bound_source": p.bound_source,
                            "reasons": [r.value for r in p.reasons]}
     mq = {m.code: m for m in q.members}
+    enav = {x.code: x for x in snap.enav}
     rows = []
     for m in g.members:
         s = specs[m.code]
+        x = enav.get(m.code)
         rows.append({
             "rank": m.rank, "code": m.code, "name": names.get(m.code, ""), "eligible": m.eligible,
             "price": s.price, "volume": s.volume, "nav": s.nav, "nav_date": s.nav_date,
@@ -102,6 +104,12 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
             "snapshot_msg_id": s.snapshot_msg_id, "nav_msg_id": s.nav_msg_id,
             "anchor_sessions": m.anchor_sessions, "anchor_health": m.anchor_health,
             "index_date": s.index_date, "fx_date": s.fx_date,
+            "enav": None if x is None else {
+                "status": x.status, "value": x.enav, "premium": x.premium, "index_move": x.index_move,
+                "futures_move": x.futures_move, "fx_move": x.fx_move, "basis": x.basis,
+                "futures_age_s": x.futures_age_s, "fx_age_s": x.fx_age_s, "reasons": [r.value for r in x.reasons],
+                "futures_mid": s.futures_mid, "futures_settle": s.futures_settle, "fx_spot": s.fx_spot,
+            },
         })
     return {
         "bundle_id": snap.bundle_id, "mode": g.mode.value, "price_basis": g.price_basis,
@@ -112,11 +120,16 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
         "notes": list(bundle.notes), "rows": rows,
         "anchor_date": None if g.anchor_date is None else g.anchor_date.isoformat(),
         "calendar_covered": bundle.calendar_covered,
-        # 评审结论：R 只回答横向比较；绝对估算溢价（E 路径）未启用，不能据此判断买入条件是否满足
-        "absolute_premium_available": False,
-        "scope_notice": "本结果只回答五只中谁相对便宜；即使全部都很贵也会有第一名。"
-                        "绝对估算溢价（E-NAV）未启用，无法判断某只的绝对溢价是否满足买入条件。",
+        "us_close_date": bundle.us_close_date, "us_close_index": bundle.us_close_index,
+        "absolute_premium_available": any(x.status == "PROXY_ANCHOR" for x in snap.enav),
+        "scope_notice": ENAV_NOTICE,
     }
+
+
+# 勘误 E8：估算溢价已提供，但锚点是未验证的代理，须与相对比较一起如实披露
+ENAV_NOTICE = ("估算溢价 = 价格 / 估算净值 − 1；估算净值用昨晚纳指收盘、纳指期货实时价相对昨结算的涨跌和即期汇率推算，"
+               "期货锚点用的是昨结算（代理，尚未验证），并假设基金满仓跟踪指数。"
+               "相对排名只回答五只中谁更便宜，即使全部都很贵也会有第一名。")
 
 
 def full_bundle(snap: RelativeSnapshot, bundle: RelativeBundle) -> dict[str, Any]:
@@ -149,14 +162,24 @@ def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]
         (f"知识截止 {_bj(v['cutoff_utc_ns'])} 北京；快照 τ {_bj(v['tau_utc_ns'])}；状态 {v['status']}；"
          f"新鲜度 {q['freshness']}；锚点 {q['anchor_health']}（参与比较成员最旧 {v['max_anchor_sessions']} 个交易日）"),
         "",
-        f"{'排名':<4}{'代码':<8}{'名称':<20}{'价格':>8}{'单位净值':>10}{'净值日':>12}{'官方净值溢价':>12}{'相对最便宜':>12}",
+        (f"{'排名':<4}{'代码':<8}{'名称':<20}{'价格':>8}{'估算净值':>10}{'估算溢价':>10}{'单位净值':>10}{'净值日':>12}"
+         f"{'官方净值溢价':>12}{'相对最便宜':>12}"),
     ]
     for r in v["rows"]:
         rel = "—" if r["rel_to_best"] is None else f"{r['rel_to_best'] * 100:+.2f}%"
         prem = "—" if r["nav_premium"] is None else f"{r['nav_premium'] * 100:+.2f}%"
+        x = r["enav"] or {}
+        enav_txt = "—" if x.get("value") is None else f"{x['value']:.4f}"
+        eprem = "—" if x.get("premium") is None else f"{x['premium'] * 100:+.2f}%"
         lines.append(f"{(r['rank'] or '—')!s:<4}{r['code']:<8}{r['name']:<20}{r['price'] or '—'!s:>8}"
-                     f"{r['nav'] or '—'!s:>10}{r['nav_date'] or '—'!s:>12}{prem:>12}{rel:>12}"
-                     + ("" if r["eligible"] else f"  退出：{','.join(r['reasons'])}"))
+                     f"{enav_txt:>10}{eprem:>10}{r['nav'] or '—'!s:>10}{r['nav_date'] or '—'!s:>12}{prem:>12}{rel:>12}"
+                     + ("" if r["eligible"] else f"  退出：{','.join(r['reasons'])}")
+                     + ("" if x.get("value") is not None else f"  估算不可用：{','.join(x.get('reasons', []))}"))
+    x0 = next((r["enav"] for r in v["rows"] if r["enav"] and r["enav"]["futures_move"] is not None), None)
+    if x0:
+        lines.append(f"估算因子：美股收盘 {v['us_close_date']} 纳指 {v['us_close_index']}；期货 {x0['futures_mid']}"
+                     f" / 昨结算 {x0['futures_settle']}（{(x0['futures_move'] - 1) * 100:+.2f}%，"
+                     f"基差 {'—' if x0['basis'] is None else f'{x0['basis'] * 1e4:.1f}bp'}）；即期汇率 {x0['fx_spot']}")
     pairs = [(r["code"], r["to_next"]) for r in v["rows"] if r["to_next"]]
     if pairs:
         lines += ["", "相邻排名成对判断（δ = S_i/S_j − 1；边界为日终历史差分 P95 放大后的情景值）："]

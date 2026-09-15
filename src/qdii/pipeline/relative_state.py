@@ -1,4 +1,4 @@
-"""相对比较的增量输入状态（ADR-009：在线与回放共用同一路径）。
+"""相对比较与盘中估算净值的增量输入状态（ADR-009：在线与回放共用同一路径）。
 
 在线：采集器每收到一条消息就 ingest；ETF 批次到达时以该消息 received_at 为知识截止生成输入包（ADR-010）。
 回放：按 (received_at, msg_id) 顺序把原始日志逐条 ingest，得到与在线相同的输入包。
@@ -7,13 +7,22 @@
 from __future__ import annotations
 
 import tomllib
+from collections import deque
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from qdii.contracts import chinamoney_ccpr_his_v1, eastmoney_lsjz_v1, index_history_v1, sina_a_share_v1
+from qdii.contracts import (
+    cfets_fx_spot_v1,
+    chinamoney_ccpr_his_v1,
+    eastmoney_lsjz_v1,
+    index_history_v1,
+    sina_a_share_v1,
+    sina_hf_v2,
+)
+from qdii.core.enav import EnavPolicy
 from qdii.core.relative import RelativeMode, RelativePolicy
 from qdii.core.relative_bundle import SCHEMA_VERSION, MemberSpec, RelativeBundle
 from qdii.core.types import (
@@ -31,6 +40,7 @@ from qdii.core.types import (
 from qdii.io.calendars import CalendarProvider, MarketPhase
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+NEW_YORK = ZoneInfo("America/New_York")
 REFERENCE_WINDOW_S = 600  # 阶段边界后冻结快照的有效期
 NAV_ROUNDING_BP = 0.5
 GROWTH_TOLERANCE = 0.0002
@@ -40,13 +50,19 @@ INDEX_ENDPOINT = "nasdaq.ndx_history"  # 跨日归一化因子 I(a)（评审 R4�
 FIXING_ENDPOINT = "chinamoney.ccpr"  # 跨日归一化因子 X0（L0_FX_T）
 INDEX_MARKET = "NASDAQ"  # I(a) 的交易日由该日历确定（二审 F1）
 FUTURE_TOLERANCE_NS = 2_000_000_000  # 供应商时间晚于接收时间超过该容差视为未来异常（二审 F3，与 core.relative 的 FUTURE_TIMESTAMP 容差一致）
+FUTURES_ENDPOINT = "sina.hf_NQ"  # E-NAV：F(t) 与昨结算 F(c)（勘误 E8）
+FX_SPOT_ENDPOINT = "cfets.fx_spot_quot"  # E-NAV：X(t)
 FACTOR_ENDPOINTS = frozenset({INDEX_ENDPOINT, FIXING_ENDPOINT})
+ENAV_ENDPOINTS = frozenset({FUTURES_ENDPOINT, FX_SPOT_ENDPOINT})
+TICK_RETENTION_NS = 30 * 60 * 1_000_000_000  # 期货/汇率样本保留最近 30 分钟，供成员按报价时刻 as-of 取值
 CONTRACTS = (sina_a_share_v1.CONTRACT_VERSION, eastmoney_lsjz_v1.CONTRACT_VERSION,
-             index_history_v1.NASDAQ_VERSION, chinamoney_ccpr_his_v1.CONTRACT_VERSION)
+             index_history_v1.NASDAQ_VERSION, chinamoney_ccpr_his_v1.CONTRACT_VERSION,
+             sina_hf_v2.CONTRACT_VERSION, cfets_fx_spot_v1.CONTRACT_VERSION)
 
 
 def is_relative_input(endpoint_id: str) -> bool:
-    return endpoint_id in (ETF_ENDPOINT, *FACTOR_ENDPOINTS) or endpoint_id.startswith(NAV_ENDPOINT_PREFIX)
+    return (endpoint_id in (ETF_ENDPOINT, *FACTOR_ENDPOINTS, *ENAV_ENDPOINTS)
+            or endpoint_id.startswith(NAV_ENDPOINT_PREFIX))
 
 
 @dataclass(frozen=True)
@@ -124,6 +140,20 @@ class _Factors:
     msg_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _Tick:
+    """期货或汇率的一条双边快照：mid 为买卖价中点；ref 为同一行的昨结算（仅期货）。"""
+
+    t: int
+    msg_id: str
+    mid: Decimal
+    ref: Decimal | None = None
+
+
+def _mid(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
+    return (bid + ask) / 2 if bid is not None and ask is not None and ask >= bid else None
+
+
 @dataclass
 class RelativeState:
     cal: CalendarProvider
@@ -138,6 +168,9 @@ class RelativeState:
     navs: dict[str, dict[date, list[_NavValue]]] = field(default_factory=dict)
     index_closes: dict[date, dict[Decimal, str]] = field(default_factory=dict)  # 日期 → {数值: msg_id}
     fixings: dict[date, dict[Decimal, str]] = field(default_factory=dict)
+    enav_policy: EnavPolicy = field(default_factory=EnavPolicy)
+    futures: deque[_Tick] = field(default_factory=deque)  # 按供应商时间递增
+    fx_spot: deque[_Tick] = field(default_factory=deque)
     last_received_utc_ns: int = 0
 
     # ---------- ingest ----------
@@ -179,8 +212,56 @@ class RelativeState:
                 if isinstance(rec, FxFixing) and rec.rate is not None and rec.pair == "USD/CNY":
                     self.fixings.setdefault(rec.publish_date, {}).setdefault(rec.rate, msg.msg_id)
             return True
+        if msg.endpoint_id == FUTURES_ENDPOINT:
+            self._push(self.futures, msg, sina_hf_v2.parse(msg).records, with_settle=True)
+            return True
+        if msg.endpoint_id == FX_SPOT_ENDPOINT:
+            self._push(self.fx_spot, msg, cfets_fx_spot_v1.parse(msg).records, with_settle=False)
+            return True
         return False
 
+    def _push(self, ticks: deque[_Tick], msg: RawMessage, records: tuple, *, with_settle: bool) -> None:
+        by_type = {r.price_type: r for r in records if isinstance(r, MarketQuote)}
+        bid, ask = by_type.get(PriceType.BID), by_type.get(PriceType.ASK)
+        if bid is None or ask is None or bid.provider_time.utc_ns is None:
+            return
+        if any(ReasonCode.TICK_MISMATCH in r.reason_codes for r in (bid, ask)):
+            return
+        t = bid.provider_time.utc_ns
+        mid = _mid(bid.value, ask.value)
+        settle = by_type.get(PriceType.SETTLE)
+        ref = settle.value if settle is not None else None
+        if mid is None or (with_settle and ref is None):
+            return
+        if t - msg.received_utc_ns > FUTURE_TOLERANCE_NS:  # 与 ETF 相同：未来时间不进入有效样本（二审 F3）
+            self.future_rejected += 1
+            return
+        if ticks and t <= ticks[-1].t:
+            return  # 供应商时间未前进（重复快照或乱序）：保留先到的样本
+        ticks.append(_Tick(t, msg.msg_id, mid, ref))
+        while ticks and ticks[0].t < t - TICK_RETENTION_NS:
+            ticks.popleft()
+
+    @staticmethod
+    def _as_of(ticks: deque[_Tick], t: int | None) -> _Tick | None:
+        """报价时刻 t（含未来容差）之前最后一条样本。"""
+        if t is None:
+            return None
+        return next((x for x in reversed(ticks) if x.t <= t + FUTURE_TOLERANCE_NS), None)
+
+    def _us_close(self, cutoff_utc_ns: int) -> tuple[date | None, int | None, Decimal | None, str | None]:
+        """估值时点之前最近一个已收盘的美股交易日 c，及 c 日 NDX 收盘（必须精确对应，不回退旧值）。"""
+        d = datetime.fromtimestamp(cutoff_utc_ns / 1e9, tz=NEW_YORK).date()
+        for _ in range(3):
+            c = self.cal.last_session_on_or_before(INDEX_MARKET, d)
+            if c is None:
+                return None, None, None, None
+            session = self.cal.session(INDEX_MARKET, c)
+            if session is not None and session.close_utc_ns <= cutoff_utc_ns:
+                idx = self._unambiguous(self.index_closes.get(c))
+                return c, session.close_utc_ns, (idx[0] if idx else None), (idx[1] if idx else None)
+            d = c - timedelta(days=1)
+        return None, None, None, None
     @staticmethod
     def _parse_etf(msg: RawMessage) -> dict[str, _Quote]:
         rows: dict[str, dict] = {}
@@ -256,6 +337,11 @@ class RelativeState:
         # 评审 R6：日历未覆盖截止日时整组以 CALENDAR_UNCERTAIN 降级；成员锚点覆盖按成员判断（二审 F5）
         if not covered:
             notes.append(ReasonCode.CALENDAR_UNCERTAIN.value)
+        # 估值时点 = 所用行情的最新报价时刻（收盘参考在夜间查看时仍是 15:00 快照，不能用之后才发生的美股收盘）
+        valuation_ns = max((q.t for q in (quotes.get(f.symbol) for f in self.funds) if q), default=cutoff_utc_ns)
+        us_close_date, us_close_ns, us_close_index, us_close_msg = self._us_close(min(valuation_ns, cutoff_utc_ns))
+        if us_close_date is not None and us_close_index is None:
+            notes.append(f"enav:index_close_missing:{us_close_date.isoformat()}")
         members: list[MemberSpec] = []
         for f in self.funds:
             q = quotes.get(f.symbol)
@@ -280,6 +366,7 @@ class RelativeState:
                 anchor_covered = self.cal.covers("SSE", nav_date)
                 if covered and anchor_covered:
                     sessions = len(self.cal.sessions_between("SSE", nav_date, today))
+            fut, fx = self._as_of(self.futures, t), self._as_of(self.fx_spot, t)
             if f.nav_fx_rule_status != "VERIFIED":
                 reasons = (*reasons, ReasonCode.NAV_FX_RULE_UNKNOWN.value)
             if f.factor_group != self.factor_group:  # AT69：不同因子组不混排
@@ -304,6 +391,13 @@ class RelativeState:
                 fx_date=factors.fx_date.isoformat() if factors else None,
                 anchor_sessions=sessions,
                 anchor_calendar_covered=anchor_covered,
+                futures_mid=str(fut.mid) if fut else None,
+                futures_settle=str(fut.ref) if fut else None,
+                futures_time_utc_ns=fut.t if fut else None,
+                futures_msg_id=fut.msg_id if fut else None,
+                fx_spot=str(fx.mid) if fx else None,
+                fx_time_utc_ns=fx.t if fx else None,
+                fx_msg_id=fx.msg_id if fx else None,
             ))
 
         # 边界只存单日 P95；按成员对 k = max(k_i, k_j) 放大在纯函数中完成（二审 F5）
@@ -329,6 +423,11 @@ class RelativeState:
             model_status="HISTORICAL_VALIDATED",
             members=tuple(members), bounds=tuple(bounds), versions=tuple(sorted(all_versions.items())),
             notes=tuple(notes),
+            us_close_date=us_close_date.isoformat() if us_close_date else None,
+            us_close_utc_ns=us_close_ns,
+            us_close_index=str(us_close_index) if us_close_index is not None else None,
+            us_close_msg_id=us_close_msg,
+            enav_policy=tuple(sorted(asdict(self.enav_policy).items())),
         )
 
 

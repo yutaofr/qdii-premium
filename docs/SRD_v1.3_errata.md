@@ -12,6 +12,7 @@
 | E5 | SRD §7 AT21、AT36 | 标为 R/E，但断言内容只对 E 成立；R 不依赖 NQ | AT36 拆分：E 分支维持原断言；R 分支断言"ETF 输入合格时 R 照常输出，不因 NQ 样本在未来而不可用"。AT21 的 R 分支断言"标明 ETF 午休冻结；R 可按 E1 输出午间参考" | AT21、AT36 |
 | E6 | VM-10 准入条件 | "从各自锚点到 t 之间没有尚未纳入锚点的加法现金事件"未说明费用计提是否算在内；若算，所有基金都会被判 NONSEPARABLE_EVENT | 明确：管理费与托管费的逐日计提不视为加法现金事件，按 VM-11（约 0.164bp/日量级）计入差分误差；仅 ETF 自身派息、合并及其他一次性加法调整触发 NONSEPARABLE_EVENT | AT63 补一个"锚点滞后 2 日、费率不同"的准入用例 |
 | E7 | QS-02 年龄定义 | `age_wall = computed_at − event_time`。`computed_at` 为计算完成时的墙钟，回放无法逐位复现，且计算耗时可能让 60 秒、120 秒边界翻转 | 改为 `age_wall = knowledge_cutoff − event_time`，其中 `knowledge_cutoff` 取触发本轮计算的消息的 `received_at`；`computed_at` 仅作元数据，不参与结果比较 | AT65、AT66 的年龄以 cutoff 为参照重述 |
+| E8 | VM-03、DS 补采优先级（"日结算价不得替代 c"） | 维护者需求（2026-09-15）：在 A 股交易时段用纳指期货实时价算实时溢价。按 VM-03 必须在美股收盘时刻实采期货锚点，家用 Mac 夜间睡眠，首次实采即 MISSING，E 路径被主机开机状态阻断 | 以 hf_NQ 行情行自带的**昨结算**作 F(c) 的代理锚点：CME 股指期货日结算按美东 16:00 前 30 秒成交确定，与纳指收盘同刻；昨结算与买卖价在同一行情行，天然同一连续合约。结果标 `SETTLEMENT_ANCHOR_PROXY`，不标已验证。放行门槛：① 结算时刻与合约一致性（含提前收盘日、9/18 到期换月前后）；② 昨结算相对指数收盘的基差逐日符合持有成本（首版只做 −0.5%～+3% 合理范围检查，超出即不可用）；③ 行情行的昨结算已滚动到最近美股交易日（样本时间不早于 c+2 小时） | 新增：估算净值公式、缺输入/过期/基差异常各自不可用、昨结算 as-of 取样；AT72（结算价不得替代 c）对代理模式豁免并显式披露 |
 
 ## 附：本轮核对通过、无需修改的项
 
@@ -30,3 +31,4 @@
 | E3 X₀ 关键路径 | 已关闭：PH0-07 历史拟合 + PH0-06 招募说明书条款一致（估值日当日中间价），规则 VERIFIED；共同锚点下 X₀ 约掉 | `reports/phase0/history/…/findings.md`、`reports/phase0/fund_rules/…/findings.md`、`data/fund_rules/` |
 | E6 费用不触发退出 | 已按此实现：只有来源事件字段或增长率断点才判 NONSEPARABLE_EVENT | `core/history_validation.py`、`apps/relative_snapshot.py::_latest_nav` |
 | E7 年龄参照 cutoff | 相对比较按知识截止时刻计算年龄 | `core/relative.py` |
+| E8 昨结算代理锚点 | 已实现（草案，未验证）：盘中估算净值与估算溢价；美股收盘实采窗口停用 | `core/enav.py`、`contracts/sina_hf_v2.py`、`contracts/cfets_fx_spot_v1.py`、`tests/unit/test_enav.py` |

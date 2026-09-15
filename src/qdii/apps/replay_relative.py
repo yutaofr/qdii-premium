@@ -62,8 +62,8 @@ def verify(data_root: Path, repo: Path, dates: list[str], *, stream: bool = Fals
                 example("INTEGRITY", rec, "bundle content does not hash to stored bundle_id")
                 continue
             snap = snapshot_to_dict(evaluate_bundle(b))
-            diffs = diff_plain({"result": snap["result"], "quality": snap["quality"]},
-                               {"result": rec["result"], "quality": rec["quality"]})
+            diffs = diff_plain({"result": snap["result"], "quality": snap["quality"], "enav": snap["enav"]},
+                               {"result": rec["result"], "quality": rec["quality"], "enav": rec.get("enav")})
             if diffs:
                 report["mismatches"] += 1
                 example("RESULT", rec, diffs[:5])

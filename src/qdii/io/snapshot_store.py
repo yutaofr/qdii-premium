@@ -34,6 +34,7 @@ class SnapshotStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps({"v": SCHEMA, "bundle_id": snapshot["bundle_id"], "bundle": bundle,
                            "result": snapshot["result"], "quality": snapshot["quality"],
+                           "enav": snapshot.get("enav", []),
                            "computed_at_utc_ns": computed_at_utc_ns}, ensure_ascii=False, separators=(",", ":"))
         with path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")

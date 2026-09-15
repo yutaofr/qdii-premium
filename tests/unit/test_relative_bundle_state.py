@@ -13,6 +13,7 @@ from qdii.apps.replay_relative import verify
 from qdii.apps.status import render_html
 from qdii.core.relative import RelativePolicy, anchor_health
 from qdii.core.relative_bundle import (
+    SCHEMA_VERSION,
     MemberSpec,
     RelativeBundle,
     bundle_from_dict,
@@ -46,7 +47,7 @@ POLICY = tuple(sorted(asdict(RelativePolicy()).items()))
 
 def bundle(**kw):
     base = RelativeBundle(
-        schema=3, cutoff_utc_ns=bj(14, 50), mode="CURRENT", price_basis="ASK", policy=POLICY, calendar_covered=True,
+        schema=SCHEMA_VERSION, cutoff_utc_ns=bj(14, 50), mode="CURRENT", price_basis="ASK", policy=POLICY, calendar_covered=True,
         model_status="HISTORICAL_VALIDATED",
         members=(spec("A", "2.200", "2.0000", bj(14, 49, 55)), spec("B", "2.240", "2.0000", bj(14, 49, 52))),
         bounds=(("A", "B", 2.0, 0.5, "test"),), versions=(("calendar", "x"),),
@@ -258,7 +259,7 @@ def test_status_page_renders_first_screen():
     })
     assert "相对比较" in page and "513100" in page and "卖一量" in page
     assert "超出情景边界" in page and "日终历史" in page and "报价错位" in page  # 结论与边界分项同时出现（R1）
-    assert "无法判断某只的绝对溢价是否满足买入条件" in page  # 范围声明
+    assert "昨结算（代理，尚未验证）" in page and "即使全部都很贵也会有第一名" in page  # 范围与锚点声明
     assert f"/relative/bundle/{rel['bundle_id']}.json" in page and "未写入快照库" in page
 
 
@@ -416,7 +417,7 @@ def test_old_schema_snapshot_reported_as_version_change_not_crash(tmp_path):
     store.append(canonical_json(b), snapshot_to_dict(evaluate_bundle(b)), 0)
     path = store.path_for(b.cutoff_utc_ns)
     rec = json.loads(path.read_text())
-    rec["bundle"]["schema"] = 2
+    rec["bundle"]["schema"] = SCHEMA_VERSION - 1
     path.write_text(path.read_text() + json.dumps(rec) + "\n")
     report = verify(tmp_path, REPO, ["2026-09-15"])
     assert report["status"] == "VERSION_CHANGED" and report["verified"] == 1 and report["version_changes"] == 1

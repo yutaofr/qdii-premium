@@ -83,8 +83,20 @@ def render_relative(rel: dict[str, Any] | None) -> str:
         prem_txt = "—" if premium is None else (f"溢价 {premium * 100:.2f}%" if premium >= 0 else f"折价 {-premium * 100:.2f}%")
         prem_txt += f"<br><span class='small'>最新价 {e(str(r['last_price'] or '—'))}</span>"
         age_txt = "—" if r["age_s"] is None else f"{r['age_s']:.0f}s"
+        x = r.get("enav") or {}
+        if x.get("premium") is not None:
+            p = x["premium"]
+            enav_cell = (f"<b>{'溢价' if p >= 0 else '折价'} {abs(p) * 100:.2f}%</b>"
+                         f"<br><span class='small'>估算净值 {x['value']:.4f}</span>")
+        else:
+            enav_cell = f"—<br><span class='small'>{e(', '.join(x.get('reasons', [])) or '未计算')}</span>"
+        enav_detail = ("" if x.get("value") is None else
+                       f"估算：指数 {(x['index_move'] - 1) * 100:+.2f}% × 期货 {(x['futures_move'] - 1) * 100:+.2f}%"
+                       f"（{e(str(x['futures_mid']))} / 昨结算 {e(str(x['futures_settle']))}，基差 {x['basis'] * 1e4:.1f}bp，"
+                       f"样本距报价 {x['futures_age_s']:.0f}s）× 汇率 {(x['fx_move'] - 1) * 100:+.2f}%"
+                       f"（即期 {e(str(x['fx_spot']))}，{x['fx_age_s']:.0f}s）；原因 {e(', '.join(x['reasons']))}；")
         details = (f"<details><summary>详情</summary><div class='small'>"
-                   f"单位净值 {e(str(r['nav']))}（{e(str(r['nav_date']))}）；快照时间 {_fmt(r['quote_time_utc_ns'])}；"
+                   f"{enav_detail}单位净值 {e(str(r['nav']))}（{e(str(r['nav_date']))}）；快照时间 {_fmt(r['quote_time_utc_ns'])}；"
                    f"年龄 {age_txt}；"
                    f"锚点后 {r['anchor_sessions']} 个交易日（{e(str(r['anchor_health']))}）；"
                    f"因子日期 指数 {e(str(r['index_date'] or '—'))} / 中间价 {e(str(r['fx_date'] or '—'))}；"
@@ -94,7 +106,7 @@ def render_relative(rel: dict[str, Any] | None) -> str:
             f"<tr class='{'' if r['eligible'] else 'muted'}'><td>{r['rank'] or '—'}</td>"
             f"<td><b>{e(r['code'])}</b><br><span class='small'>{e(r['name'])}</span></td>"
             f"<td>{e(str(r['price'] or '—'))}<br><span class='small'>{e(str(r['volume'] or ''))}</span></td>"
-            f"<td>{_pct(r['rel_to_best'])}</td><td>{judge}</td><td>{prem_txt}</td>"
+            f"<td>{enav_cell}</td><td>{_pct(r['rel_to_best'])}</td><td>{judge}</td><td>{prem_txt}</td>"
             f"<td>{e(str(r['nav_date'] or '—'))}</td><td>{FRESH_CN.get(r['freshness'], r['freshness'])}</td>"
             f"<td>{details}</td></tr>")
     reasons = ", ".join(rel["reasons"]) or "无"
@@ -104,12 +116,12 @@ def render_relative(rel: dict[str, Any] | None) -> str:
                  "内存中保留最近展示的输入包，采集器重启或被较新页面挤出后链接失效），"
                  "或用 <code>qdii relative --save</code> 另存一个新的决策快照。最近持久化快照："
                  f"{e(str(rel.get('last_persisted_bundle_id') or '无'))}")
-    return f"""<h2>相对比较 · {e(MODE_CN.get(rel['mode'], rel['mode']))}</h2>
+    return f"""<h2>估算溢价与相对比较 · {e(MODE_CN.get(rel['mode'], rel['mode']))}</h2>
 <p class="notice">{e(rel['scope_notice'])}</p>
 <p>知识截止 {_fmt(rel['cutoff_utc_ns'])}；快照 {_fmt(rel['tau_utc_ns'])}；比较状态 <b>{e(rel['status'])}</b>；
 参与比较成员锚点最旧 {rel['max_anchor_sessions']} 个交易日（{e(q['anchor_health'])}）；机会提醒 {'允许' if rel['opportunity_alert_allowed'] else '关闭'}</p>
 <div class="wrap"><table>
-<tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>相对最便宜</th><th>与下一名</th>
+<tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>估算溢价<br><span class='small'>昨结算代理锚点</span></th><th>相对最便宜</th><th>与下一名</th>
 <th>官方净值对照<br><span class='small'>最新价/已披露净值</span></th><th>净值日</th><th>新鲜度</th><th></th></tr>{''.join(rows)}</table></div>
 <p class="small">相对价差 = (价格/单位净值) 之比 − 1，不是绝对溢价百分点；"官方净值对照"用的是已披露的旧净值，不是估算净值。
 模型 M0 满仓假设（{e(q['provenance_confidence'])}，{e(q['model_status'])}）；延迟 {e(q['delay_status'])}；原因 {e(reasons)}。</p>
