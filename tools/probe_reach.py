@@ -190,7 +190,7 @@ def fetch(ep: Endpoint) -> dict:
             resp_headers = dict(resp.headers.items())
     except urllib.error.HTTPError as e:
         status, body, resp_headers = e.code, e.read() or b"", dict(e.headers.items())
-    except Exception as e:  # 网络层失败同样是证据
+    except (urllib.error.URLError, OSError, ValueError) as e:  # 网络层失败同样是证据（TimeoutError 属于 OSError）
         error = f"{type(e).__name__}: {e}"
     t1 = time.monotonic_ns()
     received = time.time_ns()
@@ -208,8 +208,8 @@ def fetch(ep: Endpoint) -> dict:
 def host_facts() -> dict:
     def run(cmd: list[str]) -> str:
         try:
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip()
-        except Exception as e:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired) as e:
             return f"ERR {e}"
     return {
         "utc_now": datetime.now(UTC).isoformat(),
@@ -256,8 +256,8 @@ def main() -> None:
     (evidence / "host.json").write_text(json.dumps(facts, ensure_ascii=False, indent=2), encoding="utf-8")
     digests = {name: hashlib.sha256((evidence / name).read_bytes()).hexdigest() for name in ("raw.jsonl", "host.json")}
     summary = [f"# 可达性探测 {run_id}", "", f"UTC {facts['utc_now']}", "", *lines, "",
-               f"原始响应与主机信息保存在仓库外 `~/qdii-data/evidence/phase0/reach/{stamp}/`，"
-               f"SHA-256：raw.jsonl `{digests['raw.jsonl']}`，host.json `{digests['host.json']}`。", "",
+               (f"原始响应与主机信息保存在仓库外 `~/qdii-data/evidence/phase0/reach/{stamp}/`，"
+                f"SHA-256：raw.jsonl `{digests['raw.jsonl']}`，host.json `{digests['host.json']}`。"), "",
                "字段完整只表示结构可解析，不代表数据新鲜、实时或语义已核验。", ""]
     (out / "summary.md").write_text("\n".join(summary), encoding="utf-8")
     print(f"\n输出目录: {out}")
