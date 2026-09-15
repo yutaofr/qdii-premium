@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
 import sys
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -37,8 +38,7 @@ def main(day: str) -> None:
     target = date.fromisoformat(day)
     out = DATA / "evidence" / "mvp" / f"replay-{day}"
     if out.exists():
-        for f in sorted(out.rglob("*"), reverse=True):
-            f.unlink() if f.is_file() or f.is_symlink() else f.rmdir()
+        shutil.rmtree(out)  # 不跟随其中的 raw 符号链接，生产原始日志不受影响
     out.mkdir(parents=True)
     (out / "raw").symlink_to(DATA / "raw")  # 只读引用生产原始日志
 

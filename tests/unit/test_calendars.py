@@ -2,6 +2,8 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import pytest
+
 from qdii.io.calendars import CalendarProvider, MarketPhase
 
 REPO = Path(__file__).resolve().parents[2]
@@ -91,3 +93,44 @@ def test_at60_rollback_removing_known_closure_rejected(tmp_path):
     assert any("rollback rejected" in e for e in cal.errors)
     assert cal.phase("SSE", ns(2026, 9, 16, 2, 0))[1:] == (None, False)
     assert json.loads(ledger.read_text())["XSHG"] == ["2026-09-16"]  # 台账不被不一致版本改写
+
+
+BAD_OVERRIDES = {
+    "alias_scalar": "alias = 1\n",
+    "alias_entry_not_table": '[alias]\nSSE = "XSHG"\n',
+    "alias_extra_key": BASE.replace('[alias.SSE]\ncalendar = "XSHG"', '[alias.SSE]\ncalendar = "XSHG"\nnote = 1', 1),
+    "opening_single_time": BASE.replace('opening = ["09:15", "09:25"]', 'opening = ["09:15"]', 1),
+    "opening_reversed": BASE.replace('opening = ["09:15", "09:25"]', 'opening = ["09:25", "09:15"]', 1),
+    "opening_not_string": BASE.replace('opening = ["09:15", "09:25"]', "opening = [915, 925]", 1),
+    "auction_unknown_key": BASE.replace('tz = "Asia/Shanghai"', 'tz = "Asia/Shanghai"\nclsoed = false', 1),
+    "auction_unknown_market": BASE + '\n[auction.XXXX]\ntz = "UTC"\nopening = ["09:00", "09:10"]\n',
+    "closure_nested_unknown_key": BASE + CLOSURE + "clsoed = false\n",
+    "closure_toml_date": BASE + CLOSURE.replace('date = "2026-09-16"', "date = 2026-09-16"),
+    "closure_not_array": BASE + "\nclosure = 1\n",
+    "closure_empty_source": BASE + CLOSURE.replace('"https://example.invalid/temporary-closure"', '""'),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BAD_OVERRIDES))
+def test_f2_invalid_override_structure_rejected_without_exception(tmp_path, name):
+    ov = tmp_path / "ov.toml"
+    ov.write_text(BAD_OVERRIDES[name], encoding="utf-8")
+    cal = CalendarProvider(ov)  # 不得抛出
+    assert cal.errors and "+UNCERTAIN" in cal.version
+    phase, session, covered = cal.phase("SSE", ns(2026, 9, 15, 2, 0))
+    assert (phase, session, covered) == (MarketPhase.UNKNOWN, None, False)
+    assert not cal.covers("NASDAQ", date(2026, 9, 14))
+    assert cal.last_session_on_or_before("NASDAQ", date(2026, 9, 14)) is None
+
+
+def test_f2_full_closure_record_with_optional_fields_accepted(tmp_path):
+    ov = tmp_path / "ov.toml"
+    ov.write_text(BASE + CLOSURE + 'received_at = "2026-09-15T08:00:00Z"\nreason = "台风"\n', encoding="utf-8")
+    cal = CalendarProvider(ov)
+    assert cal.errors == [] and cal.phase("SSE", ns(2026, 9, 16, 2, 0))[0] is MarketPhase.CLOSED
+
+
+def test_last_session_on_or_before_uses_calendar_not_weekdays():
+    assert CAL.last_session_on_or_before("NASDAQ", date(2026, 9, 7)) == date(2026, 9, 4)  # 劳工节
+    assert CAL.last_session_on_or_before("NASDAQ", date(2026, 9, 14)) == date(2026, 9, 14)
+    assert CAL.last_session_on_or_before("SSE", date(2027, 6, 1)) is None  # 超出覆盖范围

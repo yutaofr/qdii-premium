@@ -1,7 +1,9 @@
 """局域网只读状态页（ADR-014）。
 
 只绑定指定接口的 IPv4 私网地址，不监听 0.0.0.0 / IPv6；来源地址不在该子网内直接拒绝。
-只处理 GET /（HTML）与 GET /health.json。
+只处理 GET：/（HTML）、/health.json、/relative.json、/relative/bundle/<bundle_id>.json。
+
+二审 F4：页面展示的输入包按 bundle_id 放入有界缓存，下载链接取回的正是该包，不按新请求时刻重新构包。
 """
 
 from __future__ import annotations
@@ -11,6 +13,8 @@ import html
 import ipaddress
 import json
 import logging
+import re
+from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -21,6 +25,26 @@ from qdii.io import host
 
 log = logging.getLogger(__name__)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+BUNDLE_PATH = re.compile(r"^/relative/bundle/([0-9a-f]{64})\.json$")
+
+
+class BundleCache:
+    """最近展示过的完整输入包（bundle_id → 完整材料）。只存于内存，超出容量按最早展示淘汰。"""
+
+    def __init__(self, capacity: int = 64) -> None:
+        self.capacity = capacity
+        self._items: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def put(self, material: dict[str, Any]) -> str:
+        bid = material["bundle_id"]
+        self._items[bid] = material
+        self._items.move_to_end(bid)
+        while len(self._items) > self.capacity:
+            self._items.popitem(last=False)
+        return bid
+
+    def get(self, bid: str) -> dict[str, Any] | None:
+        return self._items.get(bid)
 
 
 def _fmt(utc_ns: int | None) -> str:
@@ -62,6 +86,8 @@ def render_relative(rel: dict[str, Any] | None) -> str:
         details = (f"<details><summary>详情</summary><div class='small'>"
                    f"单位净值 {e(str(r['nav']))}（{e(str(r['nav_date']))}）；快照时间 {_fmt(r['quote_time_utc_ns'])}；"
                    f"年龄 {age_txt}；"
+                   f"锚点后 {r['anchor_sessions']} 个交易日（{e(str(r['anchor_health']))}）；"
+                   f"因子日期 指数 {e(str(r['index_date'] or '—'))} / 中间价 {e(str(r['fx_date'] or '—'))}；"
                    f"原因 {e(', '.join(r['reasons']) or '无')}；行情消息 {e(str(r['snapshot_msg_id']))}；"
                    f"净值消息 {e(str(r['nav_msg_id']))}</div></details>")
         rows.append(
@@ -72,14 +98,16 @@ def render_relative(rel: dict[str, Any] | None) -> str:
             f"<td>{e(str(r['nav_date'] or '—'))}</td><td>{FRESH_CN.get(r['freshness'], r['freshness'])}</td>"
             f"<td>{details}</td></tr>")
     reasons = ", ".join(rel["reasons"]) or "无"
+    bid = e(rel["bundle_id"])
     persisted = ("本页输入包按请求时刻即时生成，<b>未写入快照库</b>；"
-                 f"<a href='/relative/bundle.json'>下载本页完整输入包</a>（含成对边界与来源），"
-                 f"或用 <code>qdii relative --save</code> 保存决策快照。最近持久化快照："
+                 f"<a href='/relative/bundle/{bid}.json'>下载本页完整输入包</a>（含成对边界与来源；"
+                 "内存中保留最近展示的输入包，采集器重启或被较新页面挤出后链接失效），"
+                 "或用 <code>qdii relative --save</code> 另存一个新的决策快照。最近持久化快照："
                  f"{e(str(rel.get('last_persisted_bundle_id') or '无'))}")
     return f"""<h2>相对比较 · {e(MODE_CN.get(rel['mode'], rel['mode']))}</h2>
 <p class="notice">{e(rel['scope_notice'])}</p>
 <p>知识截止 {_fmt(rel['cutoff_utc_ns'])}；快照 {_fmt(rel['tau_utc_ns'])}；比较状态 <b>{e(rel['status'])}</b>；
-锚点距今 {rel['sessions_since_anchor']} 个交易日（{e(q['anchor_health'])}）；机会提醒 {'允许' if rel['opportunity_alert_allowed'] else '关闭'}</p>
+参与比较成员锚点最旧 {rel['max_anchor_sessions']} 个交易日（{e(q['anchor_health'])}）；机会提醒 {'允许' if rel['opportunity_alert_allowed'] else '关闭'}</p>
 <div class="wrap"><table>
 <tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>相对最便宜</th><th>与下一名</th>
 <th>官方净值对照<br><span class='small'>最新价/已披露净值</span></th><th>净值日</th><th>新鲜度</th><th></th></tr>{''.join(rows)}</table></div>
@@ -184,10 +212,11 @@ async def serve_status(
     port: int,
     stop: asyncio.Event,
     lan_enabled: bool = False,
+    bundles: BundleCache | None = None,
 ) -> None:
     """本机回环始终提供（应用防火墙不拦回环）；局域网 IPv4 仅在 lan_enabled 时绑定，地址变化时重绑。"""
     loopback = await asyncio.start_server(
-        _handler(snapshot, ipaddress.ip_network("127.0.0.0/8")), host="127.0.0.1", port=port
+        _handler(snapshot, ipaddress.ip_network("127.0.0.0/8"), bundles), host="127.0.0.1", port=port
     )
     log.info("status page on http://127.0.0.1:%d", port)
     try:
@@ -202,7 +231,7 @@ async def serve_status(
             ip, cidr = lan
             try:
                 server = await asyncio.start_server(
-                    _handler(snapshot, ipaddress.ip_network(cidr)), host=ip, port=port
+                    _handler(snapshot, ipaddress.ip_network(cidr), bundles), host=ip, port=port
                 )
             except OSError as exc:  # 端口占用等：局域网监听失败不得影响回环状态页
                 log.warning("status: cannot bind %s:%d (%s); retry in 60s", ip, port, exc)
@@ -223,7 +252,8 @@ async def serve_status(
         await loopback.wait_closed()
 
 
-def _handler(snapshot: Callable[[], dict[str, Any]], allowed: ipaddress.IPv4Network | ipaddress.IPv6Network):
+def _handler(snapshot: Callable[[], dict[str, Any]], allowed: ipaddress.IPv4Network | ipaddress.IPv6Network,
+             bundles: BundleCache | None = None):
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             peer = writer.get_extra_info("peername")
@@ -238,9 +268,14 @@ def _handler(snapshot: Callable[[], dict[str, Any]], allowed: ipaddress.IPv4Netw
             elif request_line[1] == "/health.json":
                 body = json.dumps(snapshot(), ensure_ascii=False, default=str).encode()
                 await _respond(writer, 200, "application/json; charset=utf-8", body)
-            elif request_line[1] == "/relative/bundle.json":
-                body = json.dumps(snapshot().get("relative_bundle"), ensure_ascii=False, default=str).encode()
-                await _respond(writer, 200, "application/json; charset=utf-8", body)
+            elif (match := BUNDLE_PATH.match(request_line[1])) is not None:
+                material = bundles.get(match.group(1)) if bundles is not None else None
+                if material is None:  # 未展示过或已被淘汰：不重新构包冒充（二审 F4）
+                    await _respond(writer, 404, "text/plain; charset=utf-8",
+                                   b"bundle not cached; reload the page or use `qdii relative --save`")
+                else:
+                    body = json.dumps(material, ensure_ascii=False, default=str).encode()
+                    await _respond(writer, 200, "application/json; charset=utf-8", body)
             elif request_line[1] == "/relative.json":
                 body = json.dumps(snapshot().get("relative"), ensure_ascii=False, default=str).encode()
                 await _respond(writer, 200, "application/json; charset=utf-8", body)

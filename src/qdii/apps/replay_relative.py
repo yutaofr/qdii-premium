@@ -14,6 +14,7 @@ from typing import Any
 
 from qdii.apps.relative_snapshot import new_state, relevant
 from qdii.core.relative_bundle import (
+    SCHEMA_VERSION,
     bundle_from_dict,
     bundle_id,
     canonical_json,
@@ -43,6 +44,15 @@ def verify(data_root: Path, repo: Path, dates: list[str], *, stream: bool = Fals
         if len(report["examples"]) < MAX_EXAMPLES:
             report["examples"].append({"kind": kind, "bundle_id": rec["bundle_id"][:16],
                                        "cutoff_utc_ns": rec["bundle"]["cutoff_utc_ns"], "detail": detail})
+
+    current = [r for r in records if r["bundle"].get("schema") == SCHEMA_VERSION]
+    for rec in records:  # 旧输入包结构无法按当前代码复算：列为版本变更，不崩溃也不冒充通过
+        if rec["bundle"].get("schema") != SCHEMA_VERSION:
+            report["version_changes"] += 1
+            example("SCHEMA", rec, {"stored": rec["bundle"].get("schema"), "current": SCHEMA_VERSION})
+    records = current
+    if not records:
+        return _finish(report)
 
     if not stream:
         for rec in records:

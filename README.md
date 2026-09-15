@@ -39,7 +39,7 @@
 
 ## 使用
 
-- 首屏（本机）：`http://127.0.0.1:8787/`，数据接口 `/relative.json`（视图）、`/relative/bundle.json`（完整输入包）、`/health.json`
+- 首屏（本机）：`http://127.0.0.1:8787/`，数据接口 `/relative.json`（视图）、`/relative/bundle/<bundle_id>.json`（页面所示的完整输入包，按 id 取回）、`/health.json`
 - 命令行：`uv run qdii relative`（当前）；`uv run qdii relative --at 2026-09-15T14:50:00+08:00`（任意历史时刻）
 
 ## Phase 0 证据

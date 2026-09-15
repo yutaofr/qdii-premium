@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any
 
 from qdii.core.relative import (
+    HEALTH_ORDER,
     GroupResult,
     MemberInput,
     PairBound,
@@ -27,7 +28,7 @@ from qdii.core.relative import (
 )
 from qdii.core.types import ReasonCode
 
-SCHEMA_VERSION = 2  # v2（评审修正）：最新价、跨日归一化因子、日历覆盖、分项差分边界、完整策略参数
+SCHEMA_VERSION = 3  # v3（二审）：成员级锚点交易日数与日历覆盖、因子实际日期；边界按成员对放大
 FLOAT_TOLERANCE = 1e-10
 
 
@@ -48,6 +49,10 @@ class MemberSpec:
     index_at_anchor: str | None = None  # I(a)：不晚于净值日的最近 NDX 收盘
     fx_at_anchor: str | None = None  # X0：净值日当日中间价（L0_FX_T）
     anchor_factor_msg_ids: tuple[str, ...] = ()
+    index_date: str | None = None  # I(a) 实际对应的美股交易日（由日历确定，F1）
+    fx_date: str | None = None  # X0 实际对应的中间价日期
+    anchor_sessions: int | None = None  # 该成员净值日之后已完成的 A 股交易日数
+    anchor_calendar_covered: bool = True  # 该成员锚点日期在日历覆盖范围内
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,11 +62,10 @@ class RelativeBundle:
     mode: str
     price_basis: str
     policy: tuple[tuple[str, float | str], ...]  # RelativePolicy 全部字段
-    calendar_covered: bool
-    sessions_since_anchor: int | None
+    calendar_covered: bool  # 截止日在日历覆盖范围内（成员锚点覆盖见 MemberSpec）
     model_status: str  # HISTORICAL_VALIDATED / UNCALIBRATED
     members: tuple[MemberSpec, ...]
-    bounds: tuple[tuple[str, str, float, float, str], ...]  # (i, j, daily_bp, rounding_bp, source)，i<j
+    bounds: tuple[tuple[str, str, float, float, str], ...]  # (i, j, daily_p95_bp, rounding_bp, source)，i<j
     versions: tuple[tuple[str, str], ...]
     notes: tuple[str, ...] = ()
 
@@ -80,7 +84,7 @@ def bundle_from_dict(d: dict[str, Any]) -> RelativeBundle:
     return RelativeBundle(
         schema=d["schema"], cutoff_utc_ns=d["cutoff_utc_ns"], mode=d["mode"], price_basis=d["price_basis"],
         policy=tuple((k, v) for k, v in d["policy"]), calendar_covered=d["calendar_covered"],
-        sessions_since_anchor=d["sessions_since_anchor"], model_status=d["model_status"],
+        model_status=d["model_status"],
         members=tuple(MemberSpec(**{**m, "nav_reasons": tuple(m["nav_reasons"]),
                                     "anchor_factor_msg_ids": tuple(m["anchor_factor_msg_ids"])})
                       for m in d["members"]),
@@ -105,17 +109,6 @@ def freshness(age_s: float | None) -> str:
     return "STALE"
 
 
-def anchor_health(sessions: int | None) -> str:
-    """QS-03：锚点后已完成交易时段数 0—3 NORMAL，4—10 AGED，>10 EXTENDED。"""
-    if sessions is None or sessions < 0:
-        return "INVALID"
-    if sessions <= 3:
-        return "NORMAL"
-    if sessions <= 10:
-        return "AGED"
-    return "EXTENDED"
-
-
 _FRESH_ORDER = ("CURRENT", "RECENT", "AGING", "STALE", "UNKNOWN")
 
 
@@ -136,6 +129,7 @@ class RelativeQuality:
     anchor_health: str
     alignment: str
     max_skew_s: float | None
+    max_anchor_sessions: int | None  # 参与比较成员中锚点最旧者的交易日数
     reason_codes: tuple[str, ...]
     members: tuple[MemberQuality, ...]
 
@@ -163,19 +157,21 @@ def evaluate_bundle(bundle: RelativeBundle) -> RelativeSnapshot:
             index_at_anchor=float(m.index_at_anchor) if m.index_at_anchor is not None else None,
             fx_at_anchor=float(m.fx_at_anchor) if m.fx_at_anchor is not None else None,
             extra_reasons=tuple(ReasonCode(r) for r in m.nav_reasons)
-            + (() if bundle.calendar_covered else (ReasonCode.CALENDAR_UNCERTAIN,)),
+            + (() if bundle.calendar_covered and m.anchor_calendar_covered else (ReasonCode.CALENDAR_UNCERTAIN,)),
             last_price=Decimal(m.last_price) if m.last_price is not None else None,
+            anchor_sessions=m.anchor_sessions,
         )
         for m in bundle.members
     ]
-    health = anchor_health(bundle.sessions_since_anchor)
-    bounds = {frozenset((i, j)): PairBound(daily, rnd, src) for i, j, daily, rnd, src in bundle.bounds}
-    if health in ("EXTENDED", "INVALID"):
-        bounds = {}  # QS-03：EXTENDED 不授予 ROBUST_DIFFERENCE
+    bounds = {frozenset((i, j)): PairBound(p95, rnd, src) for i, j, p95, rnd, src in bundle.bounds}
     policy = RelativePolicy(**dict(bundle.policy))
     result = evaluate_relative(members, mode=mode, price_basis=bundle.price_basis,
                                cutoff_utc_ns=bundle.cutoff_utc_ns, policy=policy, bounds=bounds)
 
+    # F5：组级锚点健康只看参与比较的成员
+    eligible_members = [m for m in result.members if m.eligible]
+    health = (max((m.anchor_health for m in eligible_members), key=HEALTH_ORDER.index)
+              if eligible_members else "NOT_APPLICABLE")
     extra: list[ReasonCode] = []
     if not bundle.calendar_covered:
         extra.append(ReasonCode.CALENDAR_UNCERTAIN)
@@ -183,7 +179,7 @@ def evaluate_bundle(bundle: RelativeBundle) -> RelativeSnapshot:
         extra.append(ReasonCode.ANCHOR_AGED)
     elif health == "EXTENDED":
         extra.append(ReasonCode.ANCHOR_EXTENDED)
-    elif health == "INVALID" and bundle.calendar_covered:
+    elif health == "INVALID":
         extra.append(ReasonCode.ANCHOR_INVALID)
     if result.pairs and all(p.u_diff is None for p in result.pairs):
         extra.append(ReasonCode.DIFFERENTIAL_UNCALIBRATED)
@@ -217,6 +213,8 @@ def evaluate_bundle(bundle: RelativeBundle) -> RelativeSnapshot:
         anchor_health=health,
         alignment=("ALIGNED" if len(eligible) >= 2 else "NOT_APPLICABLE"),
         max_skew_s=((max(elig_times) - min(elig_times)) / 1e9) if len(elig_times) >= 2 else None,
+        max_anchor_sessions=max((m.anchor_sessions for m in eligible_members if m.anchor_sessions is not None),
+                                default=None),
         reason_codes=tuple(r.value for r in result.reasons),
         members=mq,
     )

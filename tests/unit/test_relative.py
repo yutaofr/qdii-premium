@@ -18,7 +18,8 @@ D0 = date(2026, 9, 11)
 
 
 def m(code, price, nav, **kw):
-    base = MemberInput(code, Decimal(price), T - 3 * 10**9, True, Decimal(nav), D0, True, last_price=Decimal(price))
+    base = MemberInput(code, Decimal(price), T - 3 * 10**9, True, Decimal(nav), D0, True, last_price=Decimal(price),
+                       anchor_sessions=1)
     return replace(base, **kw)
 
 
@@ -149,3 +150,19 @@ def test_nav_premium_uses_last_price_not_ask():
 def test_unverified_nav_excluded():
     g = run([m("A", "2.2", "2.0", nav_verified=False), m("B", "2.3", "2.0")])
     assert ReasonCode.PENDING_VERIFY in next(x for x in g.members if x.code == "A").reasons
+
+
+def test_f5_pair_bound_scales_with_its_own_members_anchor_age():
+    a = m("A", "2.20", "2.0", anchor_sessions=1)
+    b = m("B", "2.30", "2.0", anchor_sessions=4)
+    c = m("C", "2.40", "2.0", anchor_sessions=11)  # EXTENDED：仅涉及它的成员对失去强结论
+    bounds = {frozenset(k): PairBound(2.0, 0.5, "t") for k in ("AB", "AC", "BC")}
+    g = run([a, b, c], bounds=bounds)
+    pairs = {frozenset((p.i, p.j)): p for p in g.pairs}
+    assert pairs[frozenset("AB")].daily_bp == pytest.approx(2.0 * 2)  # √max(1, 4)
+    assert pairs[frozenset("AB")].status is RelativeStatus.ROBUST_DIFFERENCE
+    for key in ("AC", "BC"):
+        assert pairs[frozenset(key)].status is RelativeStatus.MODEL_REFERENCE
+        assert ReasonCode.ANCHOR_EXTENDED in pairs[frozenset(key)].reasons
+    g2 = run([a, replace(b, anchor_sessions=None)], bounds=bounds)
+    assert ReasonCode.ANCHOR_INVALID in g2.pairs[0].reasons

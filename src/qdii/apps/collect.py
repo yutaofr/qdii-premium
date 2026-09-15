@@ -26,7 +26,7 @@ import httpx
 
 from qdii.apps.health import EventLog, Health
 from qdii.apps.relative_snapshot import full_bundle, new_state, relevant, replay_into, view
-from qdii.apps.status import serve_status
+from qdii.apps.status import BundleCache, serve_status
 from qdii.contracts.registry import get_parser
 from qdii.core.relative_bundle import canonical_json, evaluate_bundle, snapshot_to_dict
 from qdii.core.types import ClockStatus, RawMessage
@@ -136,6 +136,7 @@ class Collector:
         self.exit_code = 0
         self.transport = transport
         self.relative: RelativeState | None = None
+        self.page_bundles = BundleCache()  # 状态页展示过的完整输入包（二审 F4）
         self.names: dict[str, str] = {}
         if repo_root is not None and (repo_root / "config" / "funds.toml").exists():
             self.relative = new_state(repo_root, root, update_ledger=True)
@@ -185,7 +186,7 @@ class Collector:
                 tasks.append(asyncio.create_task(serve_status(
                     self._status_snapshot,
                     interface=self.cfg.status_interface, port=self.cfg.status_port, stop=self.stop,
-                    lan_enabled=self.cfg.status_lan_enabled,
+                    lan_enabled=self.cfg.status_lan_enabled, bundles=self.page_bundles,
                 ), name="status"))
             for t in tasks:
                 t.add_done_callback(self._on_task_done)
@@ -360,7 +361,7 @@ class Collector:
                 snap["relative"] = view(rel_snap, bundle, self.names)
                 snap["relative"]["persisted"] = False  # 页面输入包按请求时刻生成，不写入快照库（ADR-020）
                 snap["relative"]["last_persisted_bundle_id"] = self.health.relative_last_bundle_id
-                snap["relative_bundle"] = full_bundle(rel_snap, bundle)
+                self.page_bundles.put(full_bundle(rel_snap, bundle))  # 二审 F4：下载链接取回本次展示的包
             except Exception as exc:  # 状态页计算失败不影响采集，但必须留下记录
                 log.exception("relative view failed")
                 snap["relative"] = {"error": repr(exc)}

@@ -20,7 +20,7 @@ import importlib.metadata
 import json
 import tomllib
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -66,37 +66,113 @@ class CalendarOverrideError(ValueError):
 
 
 ALLOWED_TOP_KEYS = frozenset({"alias", "auction", "closure"})
+ALIAS_KEYS = frozenset({"calendar"})
+AUCTION_KEYS = frozenset({"tz", "opening", "closing"})
+CLOSURE_REQUIRED = frozenset({"market", "date", "source"})
+CLOSURE_KEYS = CLOSURE_REQUIRED | {"received_at", "reason"}
 
 
-def _parse_overrides(raw: bytes) -> dict:
+@dataclass(frozen=True)
+class Overrides:
+    """已完整校验的覆盖规则；构造器只消费这个对象，不再读取原始 TOML 结构（二审 F2）。"""
+
+    aliases: dict[str, str]
+    closures: tuple[tuple[str, date], ...]
+    auctions: dict[str, AuctionRule]
+
+
+def _table(value: object, where: str, allowed: frozenset[str], required: frozenset[str]) -> dict:
+    if not isinstance(value, dict):
+        raise CalendarOverrideError(f"{where}: expected table, got {type(value).__name__}")
+    unknown = set(value) - allowed
+    if unknown:
+        raise CalendarOverrideError(f"{where}: unknown keys {sorted(unknown)}")
+    missing = required - set(value)
+    if missing:
+        raise CalendarOverrideError(f"{where}: missing keys {sorted(missing)}")
+    return value
+
+
+def _text(value: object, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise CalendarOverrideError(f"{where}: expected non-empty string")
+    return value
+
+
+def _interval(value: object, where: str) -> tuple[time, time]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise CalendarOverrideError(f"{where}: expected [\"HH:MM\", \"HH:MM\"]")
+    try:
+        start, end = (time.fromisoformat(_text(x, where)) for x in value)
+    except ValueError as exc:
+        raise CalendarOverrideError(f"{where}: bad time ({exc})") from exc
+    if not start < end:
+        raise CalendarOverrideError(f"{where}: start must be before end")
+    return start, end
+
+
+def _parse_overrides(raw: bytes) -> Overrides:
+    """结构与语义完整校验；任一处非法抛 CalendarOverrideError，整份不加载（AT58/60，评审 R6，二审 F2）。"""
     try:
         doc = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise CalendarOverrideError(f"unreadable overrides: {exc}") from exc
-    unknown = set(doc) - ALLOWED_TOP_KEYS
-    if unknown:
-        raise CalendarOverrideError(f"unknown keys {sorted(unknown)}")
+    _table(doc, "overrides", ALLOWED_TOP_KEYS, frozenset())
     known_calendars = set(xcals.get_calendar_names(include_aliases=True))
-    for market, a in doc.get("alias", {}).items():
-        if a.get("calendar") not in known_calendars:
-            raise CalendarOverrideError(f"alias {market} -> unknown calendar {a.get('calendar')!r}")
-    markets = set(doc.get("alias", {})) | known_calendars
-    for item in doc.get("closure", []):
-        if item.get("market") not in markets:
-            raise CalendarOverrideError(f"closure for unknown market {item.get('market')!r}")
+
+    aliases: dict[str, str] = {}
+    raw_alias = doc.get("alias", {})
+    if not isinstance(raw_alias, dict):
+        raise CalendarOverrideError("alias: expected table")
+    for market, a in raw_alias.items():
+        cal = _text(_table(a, f"alias.{market}", ALIAS_KEYS, ALIAS_KEYS)["calendar"], f"alias.{market}.calendar")
+        if cal not in known_calendars:
+            raise CalendarOverrideError(f"alias.{market}: unknown calendar {cal!r}")
+        aliases[market] = cal
+    markets = set(aliases) | known_calendars
+
+    closures: list[tuple[str, date]] = []
+    items = doc.get("closure", [])
+    if not isinstance(items, list):
+        raise CalendarOverrideError("closure: expected array of tables ([[closure]])")
+    for n, item in enumerate(items):
+        where = f"closure[{n}]"
+        _table(item, where, CLOSURE_KEYS, CLOSURE_REQUIRED)
+        market = _text(item["market"], f"{where}.market")
+        if market not in markets:
+            raise CalendarOverrideError(f"{where}: unknown market {market!r}")
         try:
-            date.fromisoformat(item["date"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise CalendarOverrideError(f"closure with bad date {item!r}") from exc
-        if not item.get("source"):
-            raise CalendarOverrideError(f"closure without source {item!r}")
-    for market, a in doc.get("auction", {}).items():
+            day = date.fromisoformat(_text(item["date"], f"{where}.date"))
+        except ValueError as exc:
+            raise CalendarOverrideError(f"{where}: bad date ({exc})") from exc
+        _text(item["source"], f"{where}.source")
+        if "received_at" in item:
+            try:
+                datetime.fromisoformat(_text(item["received_at"], f"{where}.received_at"))
+            except ValueError as exc:
+                raise CalendarOverrideError(f"{where}: bad received_at ({exc})") from exc
+        if "reason" in item:
+            _text(item["reason"], f"{where}.reason")
+        closures.append((market, day))
+
+    auctions: dict[str, AuctionRule] = {}
+    raw_auction = doc.get("auction", {})
+    if not isinstance(raw_auction, dict):
+        raise CalendarOverrideError("auction: expected table")
+    for market, a in raw_auction.items():
+        where = f"auction.{market}"
+        if market not in markets:
+            raise CalendarOverrideError(f"{where}: unknown market")
+        _table(a, where, AUCTION_KEYS, frozenset({"tz", "opening"}))
+        tz = _text(a["tz"], f"{where}.tz")
         try:
-            ZoneInfo(a["tz"])
-            [time.fromisoformat(x) for x in (*a["opening"], *a.get("closing", ()))]
-        except Exception as exc:
-            raise CalendarOverrideError(f"bad auction for {market}: {exc}") from exc
-    return doc
+            ZoneInfo(tz)
+        except (ValueError, KeyError) as exc:  # ZoneInfoNotFoundError 是 KeyError 子类
+            raise CalendarOverrideError(f"{where}.tz: unknown zone {tz!r}") from exc
+        opening = _interval(a["opening"], f"{where}.opening")
+        closing = _interval(a["closing"], f"{where}.closing") if "closing" in a else None
+        auctions[market] = AuctionRule(tz, opening, closing)
+    return Overrides(aliases, tuple(closures), auctions)
 
 
 class CalendarProvider:
@@ -106,21 +182,18 @@ class CalendarProvider:
         self.errors: list[str] = []
         self._uncertain: set[str] = set()  # 日历名；"*" 表示全部
         raw = overrides_path.read_bytes() if overrides_path else b""
+        empty = Overrides({}, (), {})
         try:
-            doc = _parse_overrides(raw) if raw else {}
+            ov = _parse_overrides(raw) if raw else empty
         except CalendarOverrideError as exc:
             self.errors.append(str(exc))
             self._uncertain.add("*")
-            doc = {}
-        self._aliases: dict[str, str] = {k: v["calendar"] for k, v in doc.get("alias", {}).items()}
+            ov = empty
+        self._aliases: dict[str, str] = dict(ov.aliases)
         self._closed: dict[str, set[date]] = {}
-        for item in doc.get("closure", []):
-            self._closed.setdefault(self._name(item["market"]), set()).add(date.fromisoformat(item["date"]))
-        self._auction: dict[str, AuctionRule] = {}
-        for market, a in doc.get("auction", {}).items():
-            oa = (time.fromisoformat(a["opening"][0]), time.fromisoformat(a["opening"][1]))
-            ca = (time.fromisoformat(a["closing"][0]), time.fromisoformat(a["closing"][1])) if "closing" in a else None
-            self._auction[market] = AuctionRule(a["tz"], oa, ca)
+        for market, day in ov.closures:
+            self._closed.setdefault(self._name(market), set()).add(day)
+        self._auction: dict[str, AuctionRule] = dict(ov.auctions)
         if ledger_path is not None and "*" not in self._uncertain:
             self._check_ledger(ledger_path, update_ledger)
         self.version = (f"exchange_calendars=={importlib.metadata.version('exchange_calendars')}"
@@ -176,6 +249,16 @@ class CalendarProvider:
             _ns(cal.session_break_start(ts)) if has_break else None,
             _ns(cal.session_break_end(ts)) if has_break else None,
         )
+
+    def last_session_on_or_before(self, market: str, d: date, max_back_days: int = 14) -> date | None:
+        """不晚于 d 的最近交易日；途经任一未覆盖日期或窗口内无交易日时返回 None（不按工作日推断）。"""
+        for back in range(max_back_days + 1):
+            day = d - timedelta(days=back)
+            if not self.covers(market, day):
+                return None
+            if self.session(market, day) is not None:
+                return day
+        return None
 
     def sessions_between(self, market: str, after: date, through: date) -> list[date]:
         """(after, through] 内的交易日。"""

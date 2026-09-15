@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import math
 import tomllib
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
@@ -39,6 +38,8 @@ ETF_ENDPOINT = "sina.etf_batch"
 NAV_ENDPOINT_PREFIX = "eastmoney.lsjz."
 INDEX_ENDPOINT = "nasdaq.ndx_history"  # 跨日归一化因子 I(a)（评审 R4）
 FIXING_ENDPOINT = "chinamoney.ccpr"  # 跨日归一化因子 X0（L0_FX_T）
+INDEX_MARKET = "NASDAQ"  # I(a) 的交易日由该日历确定（二审 F1）
+FUTURE_TOLERANCE_NS = 2_000_000_000  # 供应商时间晚于接收时间超过该容差视为未来异常（二审 F3，与 core.relative 的 FUTURE_TIMESTAMP 容差一致）
 FACTOR_ENDPOINTS = frozenset({INDEX_ENDPOINT, FIXING_ENDPOINT})
 CONTRACTS = (sina_a_share_v1.CONTRACT_VERSION, eastmoney_lsjz_v1.CONTRACT_VERSION,
              index_history_v1.NASDAQ_VERSION, chinamoney_ccpr_his_v1.CONTRACT_VERSION)
@@ -114,6 +115,15 @@ class _NavValue:
         return (self.unit_nav, self.cum_nav, self.growth_pct, self.event_fields)
 
 
+@dataclass(frozen=True)
+class _Factors:
+    index: Decimal
+    index_date: date
+    fx: Decimal
+    fx_date: date
+    msg_ids: tuple[str, ...]
+
+
 @dataclass
 class RelativeState:
     cal: CalendarProvider
@@ -124,6 +134,7 @@ class RelativeState:
     latest: dict[str, _Quote] = field(default_factory=dict)  # symbol → 最新市场快照
     reference: dict[str, _Quote] = field(default_factory=dict)  # symbol → 最新可作收盘参考的快照
     stale_rejected: int = 0  # 较旧行情被拒绝的次数（审计）
+    future_rejected: int = 0  # 供应商时间明显晚于接收时间、未进入有效指针的行情次数（审计，原文仍在原始日志）
     navs: dict[str, dict[date, list[_NavValue]]] = field(default_factory=dict)
     index_closes: dict[date, dict[Decimal, str]] = field(default_factory=dict)  # 日期 → {数值: msg_id}
     fixings: dict[date, dict[Decimal, str]] = field(default_factory=dict)
@@ -138,6 +149,10 @@ class RelativeState:
         self.last_received_utc_ns = max(self.last_received_utc_ns, msg.received_utc_ns)
         if msg.endpoint_id == ETF_ENDPOINT:
             for symbol, quote in self._parse_etf(msg).items():
+                # 二审 F3：先按接收时间校验，未来时间的异常行情不得写入有效指针，否则会挡住后续正常行情
+                if quote.t - msg.received_utc_ns > FUTURE_TOLERANCE_NS:
+                    self.future_rejected += 1
+                    continue
                 # 评审 R3：按成员比较供应商快照时间，较旧行情（即使接收更晚）不得覆盖；缺失成员保留原值
                 if quote.newer_than(self.latest.get(symbol)):
                     self.latest[symbol] = quote
@@ -209,14 +224,23 @@ class RelativeState:
             return None  # 缺失或同日多个不同数值：不提供因子
         return next(iter(values.items()))
 
-    def _anchor_factors(self, nav_date: date) -> tuple[Decimal | None, Decimal | None, tuple[str, ...]]:
-        """L0_FX_T：I(a) = 不晚于净值日的最近 NDX 收盘；X0 = 净值日当日中间价。"""
-        idx_dates = [d for d in self.index_closes if d <= nav_date]
-        idx = self._unambiguous(self.index_closes[max(idx_dates)]) if idx_dates else None
+    def _anchor_factors(self, nav_date: date) -> tuple[_Factors | None, str | None]:
+        """L0_FX_T：I(a) = 净值日应有的 NDX 收盘，X0 = 净值日当日中间价。返回 (因子, 缺失说明)。
+
+        二审 F1：先由美股日历求“不晚于净值日的最近交易日”a，再精确取 a 日收盘。
+        真实休市（如 9 月劳工节）回退到前一交易日；a 本身是交易日但数据未到/缺行时不回退到旧值，
+        该成员不提供跨日因子（随后按同日期子集规则处理）。
+        """
+        a = self.cal.last_session_on_or_before(INDEX_MARKET, nav_date)
+        if a is None:
+            return None, f"index_date_uncertain:{nav_date.isoformat()}"
+        idx = self._unambiguous(self.index_closes.get(a))
+        if idx is None:
+            return None, f"index_close_missing:{a.isoformat()}"
         fx = self._unambiguous(self.fixings.get(nav_date))
-        if idx is None or fx is None:
-            return None, None, ()
-        return idx[0], fx[0], (idx[1], fx[1])
+        if fx is None:
+            return None, f"fixing_missing:{nav_date.isoformat()}"
+        return _Factors(idx[0], a, fx[0], nav_date, (idx[1], fx[1])), None
 
     # ---------- 输入包 ----------
 
@@ -228,8 +252,11 @@ class RelativeState:
         quotes = self.latest if mode is RelativeMode.CURRENT else self.reference
         basis = basis or ("ASK" if mode is RelativeMode.CURRENT else "LAST")
 
+        today = datetime.fromtimestamp(cutoff_utc_ns / 1e9, tz=SHANGHAI).date()
+        # 评审 R6：日历未覆盖截止日时整组以 CALENDAR_UNCERTAIN 降级；成员锚点覆盖按成员判断（二审 F5）
+        if not covered:
+            notes.append(ReasonCode.CALENDAR_UNCERTAIN.value)
         members: list[MemberSpec] = []
-        nav_dates: list[date] = []
         for f in self.funds:
             q = quotes.get(f.symbol)
             last_q = self.latest.get(f.symbol) if mode is RelativeMode.CURRENT else q
@@ -243,11 +270,16 @@ class RelativeState:
             else:
                 phase_ok = is_reference_snapshot(self.cal, t)
             nav, nav_date, verified, reasons = self._nav_for(f.code)
-            idx = fx = None
-            factor_ids: tuple[str, ...] = ()
+            factors: _Factors | None = None
+            anchor_covered, sessions = True, None
             if nav_date:
-                nav_dates.append(nav_date)
-                idx, fx, factor_ids = self._anchor_factors(nav_date)
+                factors, missing = self._anchor_factors(nav_date)
+                if missing:
+                    notes.append(f"{f.code}:{missing}")
+                # 二审 F5：锚点交易日数与日历覆盖按成员计算，被剔除成员的旧锚点不影响其他成员
+                anchor_covered = self.cal.covers("SSE", nav_date)
+                if covered and anchor_covered:
+                    sessions = len(self.cal.sessions_between("SSE", nav_date, today))
             if f.nav_fx_rule_status != "VERIFIED":
                 reasons = (*reasons, ReasonCode.NAV_FX_RULE_UNKNOWN.value)
             if f.factor_group != self.factor_group:  # AT69：不同因子组不混排
@@ -265,26 +297,22 @@ class RelativeState:
                 snapshot_msg_id=q.msg_id if q else None,
                 nav_msg_id=nav.msg_id if nav else None,
                 last_price=str(last_q.last) if last_q and last_q.last is not None else None,
-                index_at_anchor=str(idx) if idx is not None else None,
-                fx_at_anchor=str(fx) if fx is not None else None,
-                anchor_factor_msg_ids=factor_ids,
+                index_at_anchor=str(factors.index) if factors else None,
+                fx_at_anchor=str(factors.fx) if factors else None,
+                anchor_factor_msg_ids=factors.msg_ids if factors else (),
+                index_date=factors.index_date.isoformat() if factors else None,
+                fx_date=factors.fx_date.isoformat() if factors else None,
+                anchor_sessions=sessions,
+                anchor_calendar_covered=anchor_covered,
             ))
 
-        today = datetime.fromtimestamp(cutoff_utc_ns / 1e9, tz=SHANGHAI).date()
-        # 评审 R6：日历未覆盖截止日或锚点日时不查询交易日区间，结果以 CALENDAR_UNCERTAIN 降级
-        covered = covered and all(self.cal.covers("SSE", d) for d in nav_dates)
-        if not covered:
-            notes.append(ReasonCode.CALENDAR_UNCERTAIN.value)
-        sessions = None
+        # 边界只存单日 P95；按成员对 k = max(k_i, k_j) 放大在纯函数中完成（二审 F5）
         bounds: list[tuple[str, str, float, float, str]] = []
-        if nav_dates and covered:
-            sessions = len(self.cal.sessions_between("SSE", min(nav_dates), today))
-            if self.udiff:
-                k = max(1, sessions)
-                for key, v in sorted(self.udiff["pairs"].items()):
-                    i, j = sorted(key.split("|"))
-                    bounds.append((i, j, v["p95_bp"] * math.sqrt(k), NAV_ROUNDING_BP,
-                                   f"{self.udiff['run_id']} 日终差分P95×√{k}（历史情景，未经盘中实测）"))
+        if self.udiff and covered:
+            source = f"{self.udiff['run_id']} 日终差分P95×√k，k=两成员锚点后交易日数较大者（历史情景，未经盘中实测）"
+            for key, v in sorted(self.udiff["pairs"].items()):
+                i, j = sorted(key.split("|"))
+                bounds.append((i, j, v["p95_bp"], NAV_ROUNDING_BP, source))
 
         all_versions = {
             "calendar": self.cal.version,
@@ -298,7 +326,7 @@ class RelativeState:
         return RelativeBundle(
             schema=SCHEMA_VERSION, cutoff_utc_ns=cutoff_utc_ns, mode=mode.value, price_basis=basis,
             policy=tuple(sorted(asdict(self.policy).items())), calendar_covered=covered,
-            sessions_since_anchor=sessions, model_status="HISTORICAL_VALIDATED",
+            model_status="HISTORICAL_VALIDATED",
             members=tuple(members), bounds=tuple(bounds), versions=tuple(sorted(all_versions.items())),
             notes=tuple(notes),
         )

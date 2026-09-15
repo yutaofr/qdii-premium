@@ -100,13 +100,15 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
             "quote_time_utc_ns": s.quote_time_utc_ns, "age_s": mq[m.code].age_s, "freshness": mq[m.code].freshness,
             "reasons": [r.value for r in m.reasons], "to_next": pair_to_next.get(m.code),
             "snapshot_msg_id": s.snapshot_msg_id, "nav_msg_id": s.nav_msg_id,
+            "anchor_sessions": m.anchor_sessions, "anchor_health": m.anchor_health,
+            "index_date": s.index_date, "fx_date": s.fx_date,
         })
     return {
         "bundle_id": snap.bundle_id, "mode": g.mode.value, "price_basis": g.price_basis,
         "cutoff_utc_ns": g.cutoff_utc_ns, "tau_utc_ns": g.tau_utc_ns, "status": g.status.value,
         "common_anchor": g.common_anchor, "opportunity_alert_allowed": g.opportunity_alert_allowed,
         "reasons": [r.value for r in g.reasons], "quality": snapshot_to_dict(snap)["quality"],
-        "sessions_since_anchor": bundle.sessions_since_anchor, "versions": dict(bundle.versions),
+        "max_anchor_sessions": q.max_anchor_sessions, "versions": dict(bundle.versions),
         "notes": list(bundle.notes), "rows": rows,
         "anchor_date": None if g.anchor_date is None else g.anchor_date.isoformat(),
         "calendar_covered": bundle.calendar_covered,
@@ -145,7 +147,7 @@ def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]
     lines = [
         f"相对比较 · {mode_cn} · 价格口径 {basis_cn}",
         (f"知识截止 {_bj(v['cutoff_utc_ns'])} 北京；快照 τ {_bj(v['tau_utc_ns'])}；状态 {v['status']}；"
-         f"新鲜度 {q['freshness']}；锚点 {q['anchor_health']}（{v['sessions_since_anchor']} 个交易日）"),
+         f"新鲜度 {q['freshness']}；锚点 {q['anchor_health']}（参与比较成员最旧 {v['max_anchor_sessions']} 个交易日）"),
         "",
         f"{'排名':<4}{'代码':<8}{'名称':<20}{'价格':>8}{'单位净值':>10}{'净值日':>12}{'官方净值溢价':>12}{'相对最便宜':>12}",
     ]

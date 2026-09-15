@@ -6,8 +6,10 @@
 - 日期不同：有跨日归一化因子（I(a_i)、X0_i）的成员用完整公式；没有因子时，取最大的同日期子集比较，
   其余成员以 NAV_FX_RULE_UNKNOWN 退出。单只基金先披露新净值不得阻断其他基金。
 
-差分边界（评审 R1，VM-10/VM-11）：
-  u_ij = 日终历史差分（调用方提供，含来源） + 报价错位情景项 + 净值舍入项
+差分边界（评审 R1、二审 F5，VM-10/VM-11）：
+  u_ij = 日终历史差分 P95 × √max(1, k_i, k_j) + 报价错位情景项 + 净值舍入项
+  k 为该成员自身锚点（净值日）之后已完成的 A 股交易日数；只由参与该对比较的两只基金决定，
+  被剔除成员的旧锚点不影响其他成员（F5）。任一成员锚点 EXTENDED / 未知时该对不授予强结论。
   错位情景项 = z · σ年 · √((|t_i − t_j| + 时间分辨率) / 年化秒数)，按 VM-11 的波动集中假设取保守值。
 - 没有边界：MODEL_REFERENCE（DIFFERENTIAL_UNCALIBRATED）；
 - 报价错位超过 robust_max_skew_s：MODEL_REFERENCE（TIME_SKEW），不授予 ROBUST_DIFFERENCE；
@@ -54,6 +56,7 @@ class MemberInput:
     nonseparable_event: bool = False
     extra_reasons: tuple[ReasonCode, ...] = ()
     last_price: Decimal | None = None  # 官方净值对照固定用最新价（SRD §4），与比较口径分开
+    anchor_sessions: int | None = None  # 该成员净值日之后已完成的 A 股交易日数（None = 日历无法确定）
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,9 +73,23 @@ class RelativePolicy:
 
 @dataclass(frozen=True, slots=True)
 class PairBound:
-    daily_bp: float  # 日终历史成对差分（已按锚点后交易日数放大）
+    daily_p95_bp: float  # 日终历史成对差分 P95（单日，未放大）
     rounding_bp: float
     source: str
+
+
+def anchor_health(sessions: int | None) -> str:
+    """QS-03：锚点后已完成交易时段数 0—3 NORMAL，4—10 AGED，>10 EXTENDED；无法确定为 INVALID。"""
+    if sessions is None or sessions < 0:
+        return "INVALID"
+    if sessions <= 3:
+        return "NORMAL"
+    if sessions <= 10:
+        return "AGED"
+    return "EXTENDED"
+
+
+HEALTH_ORDER = ("NORMAL", "AGED", "EXTENDED", "INVALID")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +103,8 @@ class MemberResult:
     nav_premium: float | None  # 最新价 / 已披露单位净值 − 1（历史对照，非估算溢价）
     s: float | None
     rank: int | None
+    anchor_sessions: int | None = None
+    anchor_health: str = "INVALID"
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +168,11 @@ def _choose_anchor_set(ok: list[MemberInput]) -> tuple[list[MemberInput], bool, 
     best_date, best_n = max(dates.items(), key=lambda kv: (kv[1], kv[0]))  # 人数最多，同数取较新日期
     if len(with_factors) >= 2 and len(with_factors) >= best_n:
         chosen = {m.code for m in with_factors}
-        return with_factors, False, None, [m for m in ok if m.code not in chosen]
+        dropped = [m for m in ok if m.code not in chosen]
+        factor_dates = {m.nav_date for m in with_factors}
+        if len(factor_dates) == 1:  # 有因子的成员恰好同日：因子相消，按共同锚点比较
+            return with_factors, True, next(iter(factor_dates)), dropped
+        return with_factors, False, None, dropped
     subset = [m for m in ok if m.nav_date == best_date]
     return subset, True, best_date, [m for m in ok if m.nav_date != best_date]
 
@@ -221,6 +244,8 @@ def evaluate_relative(
             if _positive(m.last_price) and _positive(m.nav) else None,
             s=s.get(m.code),
             rank=rank.get(m.code),
+            anchor_sessions=m.anchor_sessions,
+            anchor_health=anchor_health(m.anchor_sessions),
         )
         for m in sorted(members, key=lambda m: (rank.get(m.code, 10**6), m.code))
     )
@@ -234,10 +259,15 @@ def evaluate_relative(
         skew = abs(ti - tj) / 1e9 if ti is not None and tj is not None else None
         bound = bounds.get(frozenset((i, j)))
         daily = rnd = sk = u = None
+        healths = {anchor_health(by_code[i].anchor_sessions), anchor_health(by_code[j].anchor_sessions)}
         if bound is None:
             status, pr = RelativeStatus.MODEL_REFERENCE, (ReasonCode.DIFFERENTIAL_UNCALIBRATED,)
+        elif healths & {"EXTENDED", "INVALID"}:  # QS-03：锚点过旧或无法确定的成员对不授予强结论
+            reason = ReasonCode.ANCHOR_INVALID if "INVALID" in healths else ReasonCode.ANCHOR_EXTENDED
+            status, pr = RelativeStatus.MODEL_REFERENCE, (reason,)
         else:
-            daily, rnd = bound.daily_bp, bound.rounding_bp
+            k = max(1, by_code[i].anchor_sessions or 0, by_code[j].anchor_sessions or 0)
+            daily, rnd = bound.daily_p95_bp * math.sqrt(k), bound.rounding_bp
             sk = skew_bp(skew or 0.0, policy)
             u = (daily + sk + rnd) / 1e4
             if skew is None or skew > policy.robust_max_skew_s:
