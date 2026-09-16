@@ -18,9 +18,11 @@ import os
 import signal
 import subprocess
 import tomllib
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -49,6 +51,8 @@ MAX_WAIT_S = 15.0
 GAP_RETRY_S = 120.0  # 估算所需输入缺失时，对应端点的最短重试间隔（仍受失败退避约束，四审 D2）
 # 辅助任务（不采集数据）崩溃只降级并记录，不停止采集：2026-09-16 主机探测的一处调用崩溃使整窗口反复重启、颗粒无收
 AUXILIARY_TASKS = frozenset({"status", "host_probe", "anchor_capture"})
+AUX_BACKOFF_S = (5.0, 15.0, 30.0, 60.0)  # 辅助任务重启退避（五审 E1）
+AUX_STABLE_S = 120.0  # 运行超过该时长后再失败，退避重新从头计算
 
 
 @dataclass(frozen=True)
@@ -185,14 +189,14 @@ class Collector:
             tasks += [asyncio.create_task(self._poll(ep), name=ep.request.endpoint_id) for ep in self.endpoints]
             tasks.append(asyncio.create_task(self._heartbeat(), name="heartbeat"))
             if self.anchors is not None:
-                tasks.append(asyncio.create_task(self._anchor_capture(), name="anchor_capture"))
-            tasks.append(asyncio.create_task(self._host_probe(), name="host_probe"))
+                tasks.append(self._supervised("anchor_capture", self._anchor_capture))
+            tasks.append(self._supervised("host_probe", self._host_probe))
             if self.cfg.status_enabled:
-                tasks.append(asyncio.create_task(serve_status(
+                tasks.append(self._supervised("status", lambda: serve_status(
                     self._status_snapshot,
                     interface=self.cfg.status_interface, port=self.cfg.status_port, stop=self.stop,
                     lan_enabled=self.cfg.status_lan_enabled, bundles=self.page_bundles,
-                ), name="status"))
+                )))
             for t in tasks:
                 t.add_done_callback(self._on_task_done)
             await self.stop.wait()
@@ -205,6 +209,41 @@ class Collector:
         self._write_heartbeat()
         self.events.emit("STOP", run_id=self.run_id, exit_code=self.exit_code)
         return self.exit_code
+
+    def _supervised(self, name: str, factory: Callable[[], Coroutine[Any, Any, None]]) -> asyncio.Task[None]:
+        return asyncio.create_task(self._supervise(name, factory), name=name)
+
+    async def _supervise(self, name: str, factory: Callable[[], Coroutine[Any, Any, None]]) -> None:
+        """辅助任务的独立恢复（五审 E1）：崩溃或意外结束后按退避重启，恢复后清除降级标记。
+
+        端口被占用、外部命令暂时不可用等都会自愈；采集始终不受影响。连续失败时退避到 60 秒，
+        稳定运行超过 AUX_STABLE_S 后重新从最短退避开始。
+        """
+        attempt = 0
+        while not self.stop.is_set():
+            started = self.clock.now_utc_ns()
+            try:
+                await factory()
+                if self.stop.is_set():
+                    return
+                error = "ended unexpectedly"
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = repr(exc)
+                log.exception("auxiliary task %s failed", name)
+            self.events.emit("TASK_ENDED", task=name, error=error)
+            self.health.degraded[name] = error
+            if (self.clock.now_utc_ns() - started) / 1e9 >= AUX_STABLE_S:
+                attempt = 0
+            delay = AUX_BACKOFF_S[min(attempt, len(AUX_BACKOFF_S) - 1)]
+            attempt += 1
+            await self._sleep(delay)
+            if self.stop.is_set():
+                return
+            self.health.task_restarts[name] = self.health.task_restarts.get(name, 0) + 1
+            self.health.degraded.pop(name, None)
+            self.events.emit("TASK_RESTART", task=name, attempt=attempt, delay_s=delay)
 
     def _on_task_done(self, task: asyncio.Task[None]) -> None:
         """任何后台任务意外结束都要可见；采集任务结束才整体退出，交给 launchd 重启。

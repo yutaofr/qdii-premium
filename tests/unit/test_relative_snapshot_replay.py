@@ -19,11 +19,11 @@ def bj(h, m, s=0, day=15):
     return int(datetime(2026, 9, day, h, m, s, tzinfo=SH).timestamp() * 1e9)
 
 
-def sina_body(t_str, prices):
+def sina_body(t_str, prices, day="2026-09-15"):
     rows = []
     for code, px in prices.items():
         f = ["名"] + ["2.0"] * 5 + [px, px, "100", "200"] + ["1000", px] * 5 + ["1000", px] * 5
-        f += ["2026-09-15", t_str, "00", ""]
+        f += [day, t_str, "00", ""]
         f[3], f[21] = px, px  # 最新价、卖一价
         rows.append(f'var hq_str_{code}="{",".join(f)}";')
     return "\n".join(rows).encode("gb18030")
