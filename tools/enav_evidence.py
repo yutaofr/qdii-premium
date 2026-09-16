@@ -5,7 +5,10 @@
 - 指数收盘（Nasdaq）与中间价（CCPR）来自 2026-09-15 研究抓取（RESEARCH-20260915T072333Z，北京 15:23 收到），
   端点 ID 由 research.* 映射到生产 ID；**不是生产采集器当时写入的快照**。
 样本：
-- AS_OF_REFERENCE：截止北京 15:30。所有输入的 received_at 均不晚于截止时刻，as-of 真实；收盘参考模式，状态应为 REFERENCE。
+- AS_OF_REFERENCE：截止北京 15:30。所有输入的 received_at 均不晚于截止时刻，as-of 真实；收盘参考模式。
+
+注（2026-09-16，D4 专项）：09-15 只采集了月份未知的连续代码，且当日处于换月窗口，按现行规则估算状态为 UNAVAILABLE
+（ROLL_ANCHOR_MISSING）。独立复算值仍然给出，但只是公式值，不是生产可用的估算。身份已知的季月合约从 09-16 起采集。
 - BACKFILLED_CURRENT：截止北京 14:50（连续交易）。指数与中间价实际在截止之后才收到，此处把接收时间改写为 09:00，
   **仅用于验证当前估算链的计算，不代表当时已知信息**，状态应为 PROXY_ANCHOR。
 
@@ -122,10 +125,13 @@ def main() -> None:
         for spec, res in zip(plain["members"], snap.enav, strict=True):
             row = {"code": spec["code"], "status": res.status, "reasons": [r.value for r in res.reasons],
                    "enav": res.enav, "premium": res.premium}
-            if res.enav is not None:
+            if spec["futures_mid"] and spec["fx_spot"] and plain["us_close_index"]:
+                # 独立复算始终给出：状态为 UNAVAILABLE 时它只是公式值，不是生产可用的估算
                 indep = recompute(spec, plain, by_id)
                 row["independent"] = indep
-                row["match"] = (abs(float(indep["enav"]) / res.enav - 1) < 1e-9
+                row["independent_is_production_estimate"] = res.enav is not None
+                row["match"] = (res.enav is not None
+                                and abs(float(indep["enav"]) / res.enav - 1) < 1e-9
                                 and abs(float(indep["premium"]) - res.premium) < 1e-9
                                 and indep["a"] == spec["index_date"] and indep["c"] == plain["us_close_date"])
             members.append(row)

@@ -96,7 +96,8 @@ idle_interval_s = 3600
 [[endpoint]]
 id = "sina.hf_NQ"
 source_id = "sina"
-url = "https://hq.sinajs.cn/list=hf_NQ"
+# 连续代码 + 最近两个季月合约（身份已知）：同一请求取回，估算固定用单一月份合约，连续代码只作对照
+url = "https://hq.sinajs.cn/list=hf_NQ,{nq_quarterlies}"
 headers = { Referer = "https://finance.sina.com.cn/" }
 idle_interval_s = 60
 windows = [

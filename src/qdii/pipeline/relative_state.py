@@ -20,9 +20,10 @@ from qdii.contracts import (
     eastmoney_lsjz_v1,
     index_history_v1,
     sina_a_share_v1,
+    sina_hf_quarterly_v1,
     sina_hf_v2,
 )
-from qdii.core.anchor import in_roll_window
+from qdii.core.anchor import in_roll_window, third_friday
 from qdii.core.enav import EnavPolicy
 from qdii.core.relative import RelativeMode, RelativePolicy
 from qdii.core.relative_bundle import SCHEMA_VERSION, MemberSpec, RelativeBundle
@@ -56,6 +57,8 @@ FX_SPOT_ENDPOINT = "cfets.fx_spot_quot"  # E-NAV：X(t)
 FACTOR_ENDPOINTS = frozenset({INDEX_ENDPOINT, FIXING_ENDPOINT})
 ENAV_ENDPOINTS = frozenset({FUTURES_ENDPOINT, FX_SPOT_ENDPOINT})
 TICK_RETENTION_NS = 30 * 60 * 1_000_000_000  # 期货/汇率样本保留最近 30 分钟，供成员按报价时刻 as-of 取值
+CONTINUOUS = "CONTINUOUS"  # 新浪连续代码 hf_NQ：月份未知，只作对照与兜底
+MIN_DAYS_TO_EXPIRY = 3  # 估算所用季月合约距到期至少留出的日历天数（临近到期流动性转移）
 CONTRACTS = (sina_a_share_v1.CONTRACT_VERSION, eastmoney_lsjz_v1.CONTRACT_VERSION,
              index_history_v1.NASDAQ_VERSION, chinamoney_ccpr_his_v1.CONTRACT_VERSION,
              sina_hf_v2.CONTRACT_VERSION, cfets_fx_spot_v1.CONTRACT_VERSION)
@@ -170,7 +173,7 @@ class RelativeState:
     index_closes: dict[date, dict[Decimal, str]] = field(default_factory=dict)  # 日期 → {数值: msg_id}
     fixings: dict[date, dict[Decimal, str]] = field(default_factory=dict)
     enav_policy: EnavPolicy = field(default_factory=EnavPolicy)
-    futures: deque[_Tick] = field(default_factory=deque)  # 按供应商时间递增
+    futures: dict[str, deque[_Tick]] = field(default_factory=dict)  # 合约 → 样本（按供应商时间递增）
     fx_spot: deque[_Tick] = field(default_factory=deque)
     last_received_utc_ns: int = 0
 
@@ -214,7 +217,13 @@ class RelativeState:
                     self.fixings.setdefault(rec.publish_date, {}).setdefault(rec.rate, msg.msg_id)
             return True
         if msg.endpoint_id == FUTURES_ENDPOINT:
-            self._push(self.futures, msg, sina_hf_v2.parse(msg).records, with_settle=True)
+            # 身份已知的季月合约供估算使用；连续代码保留作对照与兜底（D4 专项 F1）
+            by_contract: dict[str, list] = {}
+            for rec in sina_hf_quarterly_v1.parse(msg).records:
+                by_contract.setdefault(rec.contract_id or CONTINUOUS, []).append(rec)
+            by_contract[CONTINUOUS] = list(sina_hf_v2.parse(msg).records)
+            for contract, recs in by_contract.items():
+                self._push(self.futures.setdefault(contract, deque()), msg, tuple(recs), with_settle=True)
             return True
         if msg.endpoint_id == FX_SPOT_ENDPOINT:
             self._push(self.fx_spot, msg, cfets_fx_spot_v1.parse(msg).records, with_settle=False)
@@ -249,6 +258,23 @@ class RelativeState:
         if t is None:
             return None
         return next((x for x in reversed(ticks) if x.t <= t + FUTURE_TOLERANCE_NS), None)
+
+    def _futures_contract(self, cutoff_utc_ns: int) -> str:
+        """估算所用期货合约：不早于截止日 + 3 天到期的最近季月合约；没有样本时退回连续代码。
+
+        F(t) 与 F(c) 都取自该合约同一行情行，天然同一合约，换月不会污染比值（VM-07）。
+        """
+        day = datetime.fromtimestamp(cutoff_utc_ns / 1e9, tz=NEW_YORK).date() + timedelta(days=MIN_DAYS_TO_EXPIRY)
+        year, month = day.year, ((day.month - 1) // 3) * 3 + 3
+        for _ in range(8):
+            if third_friday(year, month) >= day:
+                contract = f"NQ{year % 100:02d}{month:02d}"
+                if self.futures.get(contract):
+                    return contract
+            month += 3
+            if month > 12:
+                year, month = year + 1, 3
+        return CONTINUOUS
 
     def _us_close(self, cutoff_utc_ns: int) -> tuple[date | None, int | None, Decimal | None, str | None]:
         """估值时点之前最近一个已收盘的美股交易日 c，及 c 日 NDX 收盘（必须精确对应，不回退旧值）。"""
@@ -343,6 +369,8 @@ class RelativeState:
         us_close_date, us_close_ns, us_close_index, us_close_msg = self._us_close(min(valuation_ns, cutoff_utc_ns))
         if us_close_date is not None and us_close_index is None:
             notes.append(f"enav:index_close_missing:{us_close_date.isoformat()}")
+        contract = self._futures_contract(cutoff_utc_ns)
+        futures_ticks = self.futures.get(contract) or deque()
         members: list[MemberSpec] = []
         for f in self.funds:
             q = quotes.get(f.symbol)
@@ -367,7 +395,7 @@ class RelativeState:
                 anchor_covered = self.cal.covers("SSE", nav_date)
                 if covered and anchor_covered:
                     sessions = len(self.cal.sessions_between("SSE", nav_date, today))
-            fut, fx = self._as_of(self.futures, t), self._as_of(self.fx_spot, t)
+            fut, fx = self._as_of(futures_ticks, t), self._as_of(self.fx_spot, t)
             if f.nav_fx_rule_status != "VERIFIED":
                 reasons = (*reasons, ReasonCode.NAV_FX_RULE_UNKNOWN.value)
             if f.factor_group != self.factor_group:  # AT69：不同因子组不混排
@@ -430,6 +458,7 @@ class RelativeState:
             us_close_msg_id=us_close_msg,
             enav_policy=tuple(sorted(asdict(self.enav_policy).items())),
             roll_window=in_roll_window(us_close_date) if us_close_date is not None else False,
+            futures_contract=contract,
         )
 
 

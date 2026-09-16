@@ -2,12 +2,13 @@
 
 三条独立线索，全部只从原始日志重解析，不发请求：
 
-1. **结算日映射**：每个 A 股交易时段观察到的 hf_NQ 昨结算，与该时段之前最近一个美股交易日 c 的 NDX 收盘比较。
+1. **结算日映射**：每个 A 股交易时段观察到的昨结算，与该时段之前最近一个美股交易日 c 的 NDX 收盘比较。
    若字段确实是 c 日结算，基差应该小且随到期临近收敛；若落后一天，基差会随指数日变动整体平移（约 ±1%）。
-2. **合约身份与换月**：新浪连续合约日线收盘 / NDX 收盘的基差序列。到期前若出现约 +100bp 的跳升，
-   即为连续代码切换到下一季合约；跳升幅度与时点是合约身份的直接证据。
-3. **期货段误差上界**：剔除换月日后，期货日收益与指数日收益之差的分布。新浪日线收盘与指数收盘不同刻，
-   因此这是 F(t)/F(c) 这一段误差的上界，不是精确测量。
+2. **合约身份**：同一响应里的连续代码 hf_NQ 与身份已知的 hf_NQYYMM 逐字段比对，直接读出连续代码当前是哪个月份，
+   以及它在哪一天切换。这是身份证据；日线基差只能提示、不能证明身份。
+3. **日线基差变化的历史分布（探索性）**：连续代码日线收盘 / NDX 收盘的基差逐日变化。
+   新浪日线收盘与指数收盘**不同刻**，该错位既可能放大也可能抵消偏差，因此这既不是误差上界，
+   也不能推出"盘中区间误差更小"。仅用于观察换月跳变的量级与时点。
 
 用法：uv run python tools/settlement_check.py [YYYY-MM-DD]
 输出：reports/mvp/evidence/settlement-check-<date>.json
@@ -25,7 +26,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from qdii.apps.relative_snapshot import new_state
-from qdii.contracts import index_history_v1, sina_hf_v2
+from qdii.contracts import index_history_v1, sina_hf_quarterly_v1, sina_hf_v2
 from qdii.core.anchor import in_roll_window, third_friday
 from qdii.core.types import MarketQuote, PriceType
 from qdii.io import rawlog
@@ -67,6 +68,31 @@ def kline() -> dict[date, float]:
                 if float(r["close"]) > 0:
                     rows[date.fromisoformat(r["date"])] = float(r["close"])
     return rows
+
+
+def identity_observations() -> list[dict]:
+    """连续代码与身份已知季月合约的逐字段比对：连续代码此刻就是哪个月份（D4 身份证据）。"""
+    dates = [(date.today() - timedelta(days=i)).isoformat() for i in range(HISTORY_DAYS, -1, -1)]  # noqa: DTZ011
+    seen: dict[tuple[str, str], dict] = {}
+    for root in (DATA, DATA / "research"):
+        for msg in rawlog.iter_messages(root, dates=dates):
+            if msg.endpoint_id not in ("sina.hf_NQ", "research.sina.hf_NQ") or msg.status != 200:
+                continue
+            cont = {r.price_type: r.value for r in sina_hf_v2.parse(msg).records if isinstance(r, MarketQuote)}
+            per: dict[str, dict] = {}
+            for r in sina_hf_quarterly_v1.parse(msg).records:
+                per.setdefault(r.contract_id or "?", {})[r.price_type] = r.value
+            if not per or not cont:
+                continue
+            fields = (PriceType.BID, PriceType.ASK, PriceType.SETTLE)
+            matches = [c for c, q in per.items() if all(q.get(f) == cont.get(f) for f in fields)]
+            day = datetime.fromtimestamp(msg.received_utc_ns / 1e9, tz=SH).date().isoformat()
+            key = (day, ",".join(sorted(matches)) or "NONE")
+            row = seen.setdefault(key, {
+                "bj_date": day, "continuous_matches": matches or None, "samples": 0,
+                "quarterlies": {c: {k.value: str(v) for k, v in q.items()} for c, q in sorted(per.items())}})
+            row["samples"] += 1
+    return [seen[k] for k in sorted(seen)]
 
 
 def settle_observations() -> dict[date, dict]:
@@ -126,17 +152,27 @@ def main(day: str) -> None:
 
     common = sorted(set(kl) & set(idx))
     kbasis = {d: (kl[d] / idx[d] - 1) * 1e4 for d in common}
-    rolls, diffs = [], []
+    changes, all_abs, outside_roll_abs, large = [], [], [], []
     for a, b in itertools.pairwise(common):
-        delta = kbasis[b] - kbasis[a]
-        if delta > ROLL_JUMP_BP:
+        delta = kbasis[b] - kbasis[a]  # Δ(F/I) 的基差变化；与"期货收益 − 指数收益"近似但不相等
+        r_idx, r_fut = idx[b] / idx[a] - 1, kl[b] / kl[a] - 1
+        row = {"date": b.isoformat(), "basis_change_bp": round(delta, 1),
+               "return_diff_bp": round((r_fut - r_idx) * 1e4, 1), "in_roll_window": in_roll_window(b)}
+        changes.append(row)
+        all_abs.append(abs(delta))
+        if not row["in_roll_window"]:  # 排除标准与被测幅度无关：只看是否处于换月窗口
+            outside_roll_abs.append(abs(delta))
+        if abs(delta) > ROLL_JUMP_BP:  # 正负都记，避免单向截尾
             expiry = min((third_friday(b.year, m) for m in (3, 6, 9, 12)), key=lambda e: abs((e - b).days))
-            rolls.append({"date": b.isoformat(), "jump_bp": round(delta), "nearest_quarterly_expiry":
-                          expiry.isoformat(), "days_before_expiry": (expiry - b).days})
-        else:
-            diffs.append(abs(delta))
-    quarterly = [r for r in rolls if 0 <= r["days_before_expiry"] <= 11]
-    diffs.sort()
+            large.append({**row, "nearest_quarterly_expiry": expiry.isoformat(),
+                          "days_before_expiry": (expiry - b).days})
+    suspected = [r for r in large if r["in_roll_window"] and r["basis_change_bp"] > 0]
+    all_abs.sort()
+    outside_roll_abs.sort()
+
+    def stats(xs: list[float]) -> dict:
+        return {"n": len(xs), "median": round(statistics.median(xs), 1) if xs else None,
+                "p95": round(xs[int(0.95 * len(xs))], 1) if xs else None, "max": round(max(xs), 1) if xs else None}
     next_expiry = min((third_friday(target.year, m) for m in (3, 6, 9, 12) if third_friday(target.year, m) >= target),
                       default=third_friday(target.year + 1, 3))
     out = {
@@ -146,14 +182,16 @@ def main(day: str) -> None:
         "next_quarterly_expiry": next_expiry.isoformat(),
         "in_roll_window_today": in_roll_window(target),
         "settlement_observations": settle_rows,
-        "kline_basis": {
+        "contract_identity": identity_observations(),
+        "kline_basis_changes": {
+            "note": "日线收盘与指数收盘不同刻；以下为探索性分布，既不是误差上界，也不能外推到盘中区间",
             "days": len(common), "from": common[0].isoformat() if common else None,
             "to": common[-1].isoformat() if common else None,
-            "quarterly_rolls": quarterly, "other_jumps": [r for r in rolls if r not in quarterly],
-            "daily_tracking_abs_diff_bp": {
-                "n": len(diffs), "median": round(statistics.median(diffs), 1) if diffs else None,
-                "p95": round(diffs[int(0.95 * len(diffs))], 1) if diffs else None,
-                "max": round(max(diffs), 1) if diffs else None},
+            "abs_basis_change_bp_full_sample": stats(all_abs),
+            "abs_basis_change_bp_excluding_roll_windows": stats(outside_roll_abs),
+            "excluded_criterion": "季月到期前 11 天至到期日（与被测幅度无关）",
+            "suspected_roll_days": suspected,
+            "large_changes_both_directions": large,
         },
     }
     path = REPO / "reports" / "mvp" / "evidence" / f"settlement-check-{day}.json"
@@ -162,11 +200,14 @@ def main(day: str) -> None:
     for r in settle_rows:
         print(f"  {r['bj_date']} c={r['c']} 昨结算 {r['settle']} 指数 {r['index_close_c']} "
               f"基差 {r['basis_bp']}bp Δ {r['delta_basis_bp']} {r.get('flag') or ''}")
-    k = out["kline_basis"]
-    print(f"日线基差 {k['days']} 天（{k['from']}→{k['to']}）：季月换月 {len(quarterly)} 次 "
-          f"{[(r['date'], r['jump_bp'], r['days_before_expiry']) for r in quarterly]}")
-    print(f"期货段日误差上界：中位 {k['daily_tracking_abs_diff_bp']['median']}bp、"
-          f"P95 {k['daily_tracking_abs_diff_bp']['p95']}bp")
+    for r in out["contract_identity"]:
+        print(f"  身份比对 {r['bj_date']}：连续代码 = {r['continuous_matches']}（{r['samples']} 条样本）")
+    k = out["kline_basis_changes"]
+    print(f"日线基差 {k['days']} 天（{k['from']}→{k['to']}）：疑似换月 {len(k['suspected_roll_days'])} 次 "
+          f"{[(r['date'], r['basis_change_bp'], r['days_before_expiry']) for r in k['suspected_roll_days']]}")
+    print(f"双向大变动（|Δ| > {ROLL_JUMP_BP:.0f}bp）共 {len(k['large_changes_both_directions'])} 次")
+    print(f"基差日变化绝对值（探索性，非误差上界）：全样本 {k['abs_basis_change_bp_full_sample']}；"
+          f"排除换月窗口 {k['abs_basis_change_bp_excluding_roll_windows']}")
     print(path)
 
 

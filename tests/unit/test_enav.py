@@ -23,7 +23,7 @@ T = bj(14, 49, 55)
 
 BASE = EnavInput(
     code="A", price=2.2, quote_time_utc_ns=T, cutoff_utc_ns=T + 5 * 10**9, current=True, phase_ok=True,
-    calendar_ok=True, roll_window=False, nav=2.0, nav_usable=True, index_date=date(2026, 9, 11),
+    calendar_ok=True, roll_window=False, contract_known=True, nav=2.0, nav_usable=True, index_date=date(2026, 9, 11),
     index_at_anchor=29368.44, fx_at_anchor=6.7743, us_close_date=date(2026, 9, 14), us_close_utc_ns=C_0914,
     index_at_close=29127.16, futures_mid=29058.375, futures_settle=29152.25, futures_time_utc_ns=T - 4 * 10**9,
     fx_spot=6.7136, fx_time_utc_ns=T - 8 * 10**9,
@@ -38,8 +38,7 @@ def test_enav_formula_and_disclosed_proxy_reasons():
     assert r.status == "PROXY_ANCHOR" and r.enav == pytest.approx(expected, rel=1e-12)
     assert r.premium == pytest.approx(2.2 / expected - 1, rel=1e-12)
     assert r.basis == pytest.approx(29152.25 / 29127.16 - 1) and r.futures_age_s == 4 and r.fx_age_s == 8
-    assert set(r.reasons) == {ReasonCode.SETTLEMENT_ANCHOR_PROXY, ReasonCode.CONTRACT_UNKNOWN,
-                              ReasonCode.FULL_EXPOSURE_ASSUMPTION}
+    assert set(r.reasons) == {ReasonCode.SETTLEMENT_ANCHOR_PROXY, ReasonCode.FULL_EXPOSURE_ASSUMPTION}
 
 
 def test_nav_already_at_last_us_close_has_no_index_move():
@@ -67,8 +66,9 @@ def test_nav_already_at_last_us_close_has_no_index_move():
     ({"fx_time_utc_ns": T - 121 * 10**9}, ReasonCode.FX_STALE),
     ({"futures_settle": 29127.16 * 0.99}, ReasonCode.SETTLEMENT_BASIS_SUSPECT),
     ({"futures_settle": 29127.16 * 1.04}, ReasonCode.SETTLEMENT_BASIS_SUSPECT),
-    # 换月窗口内，期货段变动像合约切换（实测跳变 ≥ 50bp）
-    ({"roll_window": True, "futures_mid": 29152.25 * 1.011}, ReasonCode.ROLL_ANCHOR_MISSING),
+    # 身份未知 + 换月窗口：无法确认同一合约
+    ({"roll_window": True, "contract_known": False}, ReasonCode.ROLL_ANCHOR_MISSING),
+    ({"futures_mid": 29152.25 * 1.05}, ReasonCode.SOURCE_ANCHOR_MISMATCH),  # 异常熔断
 ])
 def test_missing_or_failed_input_makes_enav_unavailable_with_reason(change, reason):
     r = evaluate_enav(replace(BASE, **change), EnavPolicy())
@@ -104,11 +104,18 @@ def test_cfets_spot_contract():
 
 # ---------- 状态层、输入包、页面 ----------
 
-def hf(t_bj, bid, ask, settle, received, seq):
+def hf(t_bj, bid, ask, settle, received, seq, quarterly=("NQ2612",)):
+    """连续代码 + 可选的身份已知季月合约（同一响应，与生产一致）。"""
     local = datetime.fromtimestamp(t_bj / 1e9, tz=SH)
-    f = ["0", "", bid, ask, "", "", local.strftime("%H:%M:%S"), settle, "", "", "", "", local.strftime("%Y-%m-%d"),
-         "纳斯达克指数期货", ""]
-    return make_msg(f'var hq_str_hf_NQ="{",".join(f)}";'.encode("gb18030"), received_utc_ns=received, seq=seq,
+
+    def line(symbol, name, b, a, s):
+        f = ["0", "", b, a, "", "", local.strftime("%H:%M:%S"), s, "", "", "", "", local.strftime("%Y-%m-%d"),
+             name, ""]
+        return f'var hq_str_hf_{symbol}="{",".join(f)}";'
+
+    rows = [line("NQ", "纳斯达克指数期货", bid, ask, settle)]
+    rows += [line(c, f"纳斯达克指数期货{c[2:]}", bid, ask, settle) for c in quarterly]
+    return make_msg("\n".join(rows).encode("gb18030"), received_utc_ns=received, seq=seq,
                     run_id="LIVE-test", endpoint_id="sina.hf_NQ")
 
 
@@ -118,12 +125,13 @@ def fx(show_ns, bid, ask, received, seq):
                     run_id="LIVE-test", endpoint_id="cfets.fx_spot_quot")
 
 
-def enav_state():
+def enav_state(quarterly=True):
     st = fed_state()  # 五只基金净值 09-11，14:49:55 卖一 2.300
     ndx = [("2026-09-11", "29,368.44"), ("2026-09-14", "29,127.16")]
     for msg in factor_msgs(ndx, [("2026-09-11", "6.7743"), ("2026-09-14", "6.7698")]):
         st.ingest(msg)
-    st.ingest(hf(bj(14, 49, 50), "29058.25", "29058.50", "29152.25", bj(14, 49, 51), 90))
+    st.ingest(hf(bj(14, 49, 50), "29058.25", "29058.50", "29152.25", bj(14, 49, 51), 90,
+                 quarterly=("NQ2612",) if quarterly else ()))
     st.ingest(fx(bj(14, 49, 47), "6.7131", "6.7132", bj(14, 49, 49), 91))
     return st
 
@@ -152,8 +160,9 @@ def test_futures_sample_is_taken_as_of_member_quote_time():
 def test_future_timestamped_futures_tick_rejected():
     st = enav_state()
     before = st.future_rejected
-    st.ingest(hf(bj(15, 0), "1.00", "1.25", "29152.25", bj(14, 49, 52), 93))
-    assert st.future_rejected == before + 1 and st.futures[-1].t == bj(14, 49, 50)
+    st.ingest(hf(bj(15, 0), "1.00", "1.25", "29152.25", bj(14, 49, 52), 93))  # 连续 + 季月各一条
+    assert st.future_rejected == before + 2
+    assert all(ticks[-1].t == bj(14, 49, 50) for ticks in st.futures.values())
 
 
 def test_missing_index_close_for_last_us_session_disables_enav_not_ranking():
@@ -239,19 +248,52 @@ def test_input_gaps_name_endpoints_that_can_fill_missing_estimate_inputs():
     assert input_gaps(st.bundle(bj(14, 50))) == {"eastmoney.lsjz.513100"}
 
 
-def test_roll_window_is_disclosed_and_contract_switch_blocks_the_estimate():
-    """VM-07：换月窗口内始终披露；期货段变动超过阈值（像换月跳变）时不出估算。"""
-    normal = evaluate_enav(replace(BASE, roll_window=True), EnavPolicy())
-    assert normal.status == "PROXY_ANCHOR" and ReasonCode.ROLL_WINDOW in normal.reasons
-    jumped = evaluate_enav(replace(BASE, roll_window=True, futures_mid=BASE.futures_settle * 1.011), EnavPolicy())
-    assert jumped.status == "UNAVAILABLE" and ReasonCode.ROLL_ANCHOR_MISSING in jumped.reasons
-    # 窗口外同样的跳变不拦截（只按基差与时效判断）
-    outside = evaluate_enav(replace(BASE, roll_window=False, futures_mid=BASE.futures_settle * 1.011), EnavPolicy())
-    assert outside.status == "PROXY_ANCHOR"
+def test_known_contract_survives_the_roll_window_unknown_one_does_not():
+    """D4 专项 F1：净变动无法拆分合约价差与行情变动，因此身份未知时换月窗口内一律不出估算。"""
+    known = evaluate_enav(replace(BASE, roll_window=True), EnavPolicy())
+    assert known.status == "PROXY_ANCHOR" and ReasonCode.ROLL_WINDOW in known.reasons
+    assert ReasonCode.CONTRACT_UNKNOWN not in known.reasons
+
+    # 合约价差 +1% 与行情 −0.6% 相抵，净变动只有 +0.4%：旧阈值放行，现在按身份判断直接拒绝
+    offset = replace(BASE, roll_window=True, contract_known=False, futures_mid=BASE.futures_settle * 1.01 * 0.994)
+    assert evaluate_enav(offset, EnavPolicy()).status == "UNAVAILABLE"
+    assert ReasonCode.ROLL_ANCHOR_MISSING in evaluate_enav(offset, EnavPolicy()).reasons
+
+    # 身份未知但不在换月窗口：可用，且如实披露 CONTRACT_UNKNOWN
+    outside = evaluate_enav(replace(BASE, roll_window=False, contract_known=False), EnavPolicy())
+    assert outside.status == "PROXY_ANCHOR" and ReasonCode.CONTRACT_UNKNOWN in outside.reasons
 
 
-def test_state_marks_roll_window_from_us_close_date():
-    st = enav_state()  # c = 2026-09-14，9 月到期日 09-18，处于换月窗口（到期前 11 天内）
+def test_state_picks_an_identified_quarterly_contract_and_marks_roll_window():
+    st = enav_state()  # c = 2026-09-14，9 月到期 09-18：截止日 +3 天已过 09-18，应选 12 月合约
     b = st.bundle(bj(14, 50))
-    assert b.roll_window is True
-    assert all(ReasonCode.ROLL_WINDOW in x.reasons for x in evaluate_bundle(b).enav)
+    assert b.roll_window is True and b.futures_contract == "NQ2612"
+    snap = evaluate_bundle(b)
+    assert all(x.status == "PROXY_ANCHOR" for x in snap.enav)
+    assert all(ReasonCode.ROLL_WINDOW in x.reasons and ReasonCode.CONTRACT_UNKNOWN not in x.reasons
+               for x in snap.enav)
+
+
+def test_state_falls_back_to_continuous_when_no_identified_contract_is_available():
+    st = enav_state(quarterly=False)
+    b = st.bundle(bj(14, 50))
+    assert b.futures_contract == "CONTINUOUS"
+    snap = evaluate_bundle(b)  # 换月窗口内 + 身份未知 → 不出估算
+    assert all(x.status == "UNAVAILABLE" and ReasonCode.ROLL_ANCHOR_MISSING in x.reasons for x in snap.enav)
+
+
+def test_sina_hf_quarterly_contract_parses_identity_and_settlement():
+    from qdii.contracts import sina_hf_quarterly_v1
+    from qdii.pipeline.sources import nq_quarterlies
+
+    msg = hf(bj(14, 49, 50), "29061.25", "29063.75", "28955.00", bj(14, 49, 51), 95,
+             quarterly=("NQ2609", "NQ2612"))
+    recs = sina_hf_quarterly_v1.parse(msg).records
+    assert {r.contract_id for r in recs} == {"NQ2609", "NQ2612"}  # 连续代码那一行不在其中
+    sep = {r.price_type: r for r in recs if r.contract_id == "NQ2609"}
+    assert sep[PriceType.BID].value == Decimal("29061.25") and sep[PriceType.SETTLE].value == Decimal("28955.00")
+    assert ReasonCode.CONTRACT_UNKNOWN not in sep[PriceType.BID].reason_codes  # 身份来自合约代码
+    assert ReasonCode.SETTLEMENT_ANCHOR_PROXY in sep[PriceType.SETTLE].reason_codes  # 结算日仍未证实
+    assert sep[PriceType.BID].provider_time.utc_ns == bj(14, 49, 50)
+    assert nq_quarterlies(date(2026, 9, 16)) == ["NQ2609", "NQ2612"]  # 到期前仍列当季
+    assert nq_quarterlies(date(2026, 9, 19)) == ["NQ2612", "NQ2703"]  # 到期后自动前移

@@ -29,7 +29,7 @@ from qdii.core.relative import (
 )
 from qdii.core.types import ReasonCode
 
-SCHEMA_VERSION = 5  # v5（五审后）：换月窗口标记，供估算判断连续合约是否可能已切换月份
+SCHEMA_VERSION = 6  # v6（D4 专项）：估算改用身份已知的季月合约，输入包记录合约代码
 FLOAT_TOLERANCE = 1e-10
 
 
@@ -81,6 +81,7 @@ class RelativeBundle:
     us_close_index: str | None = None  # I(c)
     us_close_msg_id: str | None = None
     roll_window: bool = False  # c 处于季月换月窗口（VM-07）
+    futures_contract: str | None = None  # 期货取值所用合约（NQYYMM 身份已知；CONTINUOUS 为月份未知的连续代码）
     enav_policy: tuple[tuple[str, float | str], ...] = ()
 
 
@@ -100,7 +101,7 @@ def bundle_from_dict(d: dict[str, Any]) -> RelativeBundle:
         policy=tuple((k, v) for k, v in d["policy"]), calendar_covered=d["calendar_covered"],
         us_close_date=d["us_close_date"], us_close_utc_ns=d["us_close_utc_ns"], us_close_index=d["us_close_index"],
         us_close_msg_id=d["us_close_msg_id"], enav_policy=tuple((k, v) for k, v in d["enav_policy"]),
-        roll_window=d["roll_window"],
+        roll_window=d["roll_window"], futures_contract=d["futures_contract"],
         model_status=d["model_status"],
         members=tuple(MemberSpec(**{**m, "nav_reasons": tuple(m["nav_reasons"]),
                                     "anchor_factor_msg_ids": tuple(m["anchor_factor_msg_ids"])})
@@ -256,6 +257,7 @@ def _enav(bundle: RelativeBundle) -> tuple[EnavResult, ...]:
             index_at_anchor=_num(m.index_at_anchor), fx_at_anchor=_num(m.fx_at_anchor),
             us_close_date=c, us_close_utc_ns=bundle.us_close_utc_ns, index_at_close=_num(bundle.us_close_index),
             roll_window=bundle.roll_window,
+            contract_known=bool(bundle.futures_contract) and bundle.futures_contract != "CONTINUOUS",
             futures_mid=_num(m.futures_mid), futures_settle=_num(m.futures_settle),
             futures_time_utc_ns=m.futures_time_utc_ns, fx_spot=_num(m.fx_spot), fx_time_utc_ns=m.fx_time_utc_ns,
         ), policy)

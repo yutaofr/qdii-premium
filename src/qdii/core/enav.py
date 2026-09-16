@@ -8,9 +8,11 @@
 - F(c)：新浪 hf_NQ 昨结算（CME 日结算与 16:00 ET 收盘同刻）；F(t)：同一行情行的买卖价中点，按成员报价时刻 as-of 取。
 - X(t)：CFETS USD/CNY 即期买卖价中点，同样按成员报价时刻 as-of 取。
 
-换月（VM-07，实测：新浪连续合约在季月到期前 1—3 天跳升约 +110bp，见 reports/phase0/futures/）：
-换月窗口内 F(t) 与 F(c) 可能分属不同月份，二者相除会凭空多出一个基差。窗口内始终披露 ROLL_WINDOW，
-且 |F(t)/F(c) − 1| 超过 roll_max_move 时判为 ROLL_ANCHOR_MISSING，不出估算。
+合约身份与换月（VM-07，D4 专项 F1）：F(t) 与 F(c) 取自同一合约的同一行情行。
+- 合约身份已知（hf_NQYYMM）：换月不会污染比值，换月窗口内只作披露（ROLL_WINDOW）。
+- 身份未知（连续代码兜底）：换月窗口内 F(t) 与 F(c) 可能分属不同月份，且净变动无法拆分出合约价差
+  （例：合约价差 +1% 与行情 −0.6% 相抵后净变动仅 +0.4%），因此**一律不出估算**（ROLL_ANCHOR_MISSING）。
+`futures_move_max` 只是异常熔断（明显超出单日可能的变动），不作为合约身份凭据。
 
 结果三态（四审 D1）：
 - PROXY_ANCHOR：连续交易中、按知识截止时刻检查 ETF/期货/汇率都够新，可作"当前"盘中代理估算（结算日未验证）；
@@ -38,7 +40,7 @@ class EnavPolicy:
     fx_max_age_s: float = 120.0  # CFETS 每 30 秒轮询
     basis_min: float = -0.005  # 昨结算 / 指数收盘 − 1 的合理范围（持有成本为正，近到期趋近 0）
     basis_max: float = 0.03
-    roll_max_move: float = 0.006  # 换月窗口内允许的期货段变动上限（实测换月跳变 ≥ 50bp，典型 110bp）
+    futures_move_max: float = 0.03  # 期货段单次变动熔断（异常检测，非身份凭据）
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,7 @@ class EnavInput:
     phase_ok: bool  # 报价所处阶段合格（连续交易，或收盘参考冻结快照）
     calendar_ok: bool  # 截止日与该成员锚点日期都在日历覆盖范围内
     roll_window: bool  # c 所在美东日期处于季月换月窗口
+    contract_known: bool  # 期货取自身份已知的季月合约（而非月份未知的连续代码）
     nav: float | None
     nav_usable: bool  # 已通过净值校验且无事件/规则隔离
     index_date: date | None  # a 对应的美股交易日
@@ -132,8 +135,10 @@ def evaluate_enav(m: EnavInput, policy: EnavPolicy) -> EnavResult:
 
     index_move = m.index_at_close / m.index_at_anchor if _pos(m.index_at_close) and _pos(m.index_at_anchor) else None
     futures_move = m.futures_mid / m.futures_settle if _pos(m.futures_mid) and _pos(m.futures_settle) else None
-    if m.roll_window and futures_move is not None and abs(futures_move - 1) > policy.roll_max_move:
-        missing.append(ReasonCode.ROLL_ANCHOR_MISSING)  # 期货段变动像合约切换，不像行情变动
+    if m.roll_window and not m.contract_known:
+        missing.append(ReasonCode.ROLL_ANCHOR_MISSING)  # 身份未知 + 换月窗口：无法确认 F(t) 与 F(c) 同一合约
+    if futures_move is not None and abs(futures_move - 1) > policy.futures_move_max:
+        missing.append(ReasonCode.SOURCE_ANCHOR_MISMATCH)  # 异常熔断：变动超出单日可能范围
     fx_move = m.fx_spot / m.fx_at_anchor if _pos(m.fx_spot) and _pos(m.fx_at_anchor) else None
     if missing:
         return EnavResult(m.code, "UNAVAILABLE", None, None, index_move, futures_move, fx_move, basis, f_age, x_age,
@@ -142,6 +147,7 @@ def evaluate_enav(m: EnavInput, policy: EnavPolicy) -> EnavResult:
     return EnavResult(
         m.code, "PROXY_ANCHOR" if m.current else "REFERENCE", enav, m.price / enav - 1,  # type: ignore[operator]
         index_move, futures_move, fx_move, basis, f_age, x_age,
-        (ReasonCode.SETTLEMENT_ANCHOR_PROXY, ReasonCode.CONTRACT_UNKNOWN, ReasonCode.FULL_EXPOSURE_ASSUMPTION)
-        + ((ReasonCode.ROLL_WINDOW,) if m.roll_window else ()),
+        (ReasonCode.SETTLEMENT_ANCHOR_PROXY, ReasonCode.FULL_EXPOSURE_ASSUMPTION)
+        + ((ReasonCode.ROLL_WINDOW,) if m.roll_window else ())
+        + (() if m.contract_known else (ReasonCode.CONTRACT_UNKNOWN,)),
     )

@@ -1,25 +1,23 @@
 {
-  "nature": "四审 D3：真实来源贯通的估算净值成功样本，并用独立代码从原始报文复算。\n\n性质（必须如实标注）：\n- 行情（新浪 ETF、hf_NQ）、净值（东方财富）、即期汇率（CFETS）来自生产原始日志；\n- 指数收盘（Nasdaq）与中间价（CCPR）来自 2026-09-15 研究抓取（RESEARCH-20260915T072333Z，北京 15:23 收到），\n  端点 ID 由 research.* 映射到生产 ID；**不是生产采集器当时写入的快照**。\n样本：\n- AS_OF_REFERENCE：截止北京 15:30。所有输入的 received_at 均不晚于截止时刻，as-of 真实；收盘参考模式，状态应为 REFERENCE。\n- BACKFILLED_CURRENT：截止北京 14:50（连续交易）。指数与中间价实际在截止之后才收到，此处把接收时间改写为 09:00，\n  **仅用于验证当前估算链的计算，不代表当时已知信息**，状态应为 PROXY_ANCHOR。\n\n独立复算不调用任何 qdii 解析器或估值函数：直接按字段位置/JSON 键读取原始报文，用 Decimal 计算。",
-  "generated_utc": "2026-09-15T21:42:42+00:00",
+  "nature": "四审 D3：真实来源贯通的估算净值成功样本，并用独立代码从原始报文复算。\n\n性质（必须如实标注）：\n- 行情（新浪 ETF、hf_NQ）、净值（东方财富）、即期汇率（CFETS）来自生产原始日志；\n- 指数收盘（Nasdaq）与中间价（CCPR）来自 2026-09-15 研究抓取（RESEARCH-20260915T072333Z，北京 15:23 收到），\n  端点 ID 由 research.* 映射到生产 ID；**不是生产采集器当时写入的快照**。\n样本：\n- AS_OF_REFERENCE：截止北京 15:30。所有输入的 received_at 均不晚于截止时刻，as-of 真实；收盘参考模式。\n\n注（2026-09-16，D4 专项）：09-15 只采集了月份未知的连续代码，且当日处于换月窗口，按现行规则估算状态为 UNAVAILABLE\n（ROLL_ANCHOR_MISSING）。独立复算值仍然给出，但只是公式值，不是生产可用的估算。身份已知的季月合约从 09-16 起采集。\n- BACKFILLED_CURRENT：截止北京 14:50（连续交易）。指数与中间价实际在截止之后才收到，此处把接收时间改写为 09:00，\n  **仅用于验证当前估算链的计算，不代表当时已知信息**，状态应为 PROXY_ANCHOR。\n\n独立复算不调用任何 qdii 解析器或估值函数：直接按字段位置/JSON 键读取原始报文，用 Decimal 计算。",
+  "generated_utc": "2026-09-16T08:28:21+00:00",
   "evidence_dir": "/Users/weizhang/qdii-data/evidence/enav-2026-09-15",
   "samples": {
     "AS_OF_REFERENCE": {
       "cutoff_bj": "2026-09-15T15:30:00+08:00",
       "mode": "CLOSING_REFERENCE",
       "backfilled_factor_receive_time": false,
-      "bundle_id": "09f0cf8bed463afc787e74828b64f86782aa99082049f8373e8dad8b370dab45",
-      "bundle_sha256": "09f0cf8bed463afc787e74828b64f86782aa99082049f8373e8dad8b370dab45",
+      "bundle_id": "05c1663e716af50ab45600b3293cc67719d6a3a1cdba7e8bfa7098e4a0695af9",
+      "bundle_sha256": "05c1663e716af50ab45600b3293cc67719d6a3a1cdba7e8bfa7098e4a0695af9",
       "members": [
         {
           "code": "513100",
-          "status": "REFERENCE",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 1.9420503454499118,
-          "premium": 0.1307636823860281,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "2.196",
             "N0": "1.9831",
@@ -38,18 +36,17 @@
             "premium": "0.1307636824",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         },
         {
           "code": "159696",
-          "status": "REFERENCE",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 1.8083607819157457,
-          "premium": 0.10431503490382776,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "1.997",
             "N0": "1.8461",
@@ -68,18 +65,17 @@
             "premium": "0.1043150349",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         },
         {
           "code": "159501",
-          "status": "REFERENCE",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 1.8246214335488107,
-          "premium": 0.14215472956859276,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "2.084",
             "N0": "1.8627",
@@ -98,18 +94,17 @@
             "premium": "0.1421547296",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         },
         {
           "code": "159660",
-          "status": "REFERENCE",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 2.1225048167786347,
-          "premium": 0.09540387452627619,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "2.325",
             "N0": "2.1668",
@@ -128,18 +123,17 @@
             "premium": "0.0954038745",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         },
         {
           "code": "513390",
-          "status": "REFERENCE",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 2.180690522019843,
-          "premium": 0.09690025973260674,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "2.392",
             "N0": "2.2262",
@@ -158,7 +152,8 @@
             "premium": "0.0969002597",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         }
       ]
     },
@@ -166,19 +161,17 @@
       "cutoff_bj": "2026-09-15T14:50:00+08:00",
       "mode": "CURRENT",
       "backfilled_factor_receive_time": true,
-      "bundle_id": "c000c3df566853de127989860f3012c7878f62322fbb549e09ec091d6badf5a1",
-      "bundle_sha256": "c000c3df566853de127989860f3012c7878f62322fbb549e09ec091d6badf5a1",
+      "bundle_id": "341ce16151e24f1491925c29f16011a025fa39e2b7a0587df56614112bb81729",
+      "bundle_sha256": "341ce16151e24f1491925c29f16011a025fa39e2b7a0587df56614112bb81729",
       "members": [
         {
           "code": "513100",
-          "status": "PROXY_ANCHOR",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 1.942907652877107,
-          "premium": 0.12820596323969946,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "2.192",
             "N0": "1.9831",
@@ -197,18 +190,17 @@
             "premium": "0.1282059632",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         },
         {
           "code": "159696",
-          "status": "PROXY_ANCHOR",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 1.80868429124927,
-          "premium": 0.1046704002830523,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "1.998",
             "N0": "1.8461",
@@ -227,18 +219,17 @@
             "premium": "0.1046704003",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         },
         {
           "code": "159501",
-          "status": "PROXY_ANCHOR",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 1.8249478518552704,
-          "premium": 0.14304636040933438,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "2.086",
             "N0": "1.8627",
@@ -257,18 +248,17 @@
             "premium": "0.1430463604",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         },
         {
           "code": "159660",
-          "status": "PROXY_ANCHOR",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 2.1228845253664033,
-          "premium": 0.09473688852618345,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "2.324",
             "N0": "2.1668",
@@ -287,18 +277,17 @@
             "premium": "0.0947368885",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         },
         {
           "code": "513390",
-          "status": "PROXY_ANCHOR",
+          "status": "UNAVAILABLE",
           "reasons": [
-            "SETTLEMENT_ANCHOR_PROXY",
-            "CONTRACT_UNKNOWN",
-            "FULL_EXPOSURE_ASSUMPTION"
+            "ROLL_ANCHOR_MISSING"
           ],
-          "enav": 2.18108063982402,
-          "premium": 0.09624557494257391,
+          "enav": null,
+          "premium": null,
           "independent": {
             "price": "2.391",
             "N0": "2.2262",
@@ -317,7 +306,8 @@
             "premium": "0.0962455749",
             "basis": "0.0008613953"
           },
-          "match": true
+          "independent_is_production_estimate": false,
+          "match": false
         }
       ]
     }

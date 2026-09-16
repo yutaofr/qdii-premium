@@ -121,6 +121,7 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
         "anchor_date": None if g.anchor_date is None else g.anchor_date.isoformat(),
         "calendar_covered": bundle.calendar_covered,
         "us_close_date": bundle.us_close_date, "us_close_index": bundle.us_close_index,
+        "futures_contract": bundle.futures_contract, "roll_window": bundle.roll_window,
         "absolute_premium_available": any(x.status == "PROXY_ANCHOR" for x in snap.enav),
         "scope_notice": ENAV_NOTICE,
     }
@@ -176,13 +177,15 @@ def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]
                      f"{enav_txt:>10}{eprem:>10}{r['nav'] or '—'!s:>10}{r['nav_date'] or '—'!s:>12}{prem:>12}{rel:>12}"
                      + ("" if r["eligible"] else f"  退出：{','.join(r['reasons'])}")
                      + ("" if x.get("value") is not None else f"  估算不可用：{','.join(x.get('reasons', []))}"))
-    if any("ROLL_WINDOW" in (r["enav"] or {}).get("reasons", []) for r in v["rows"]):
-        lines.append("换月窗口：纳指期货连续合约临近季月到期会切换月份；期货段变动超过 0.6% 时不出估算。")
+    if v["roll_window"]:
+        lines.append(f"换月窗口：临近季月到期。估算固定使用合约 {v['futures_contract']}；"
+                     "若退回月份未知的连续代码，窗口内不出估算。")
     if any((r["enav"] or {}).get("status") == "REFERENCE" for r in v["rows"]):
         lines.append("* 收盘参考估算：基于冻结的收盘/午休快照，不代表当前可交易价格。")
     x0 = next((r["enav"] for r in v["rows"] if r["enav"] and r["enav"]["futures_move"] is not None), None)
     if x0:
-        lines.append(f"估算因子：美股收盘 {v['us_close_date']} 纳指 {v['us_close_index']}；期货 {x0['futures_mid']}"
+        lines.append(f"估算因子：美股收盘 {v['us_close_date']} 纳指 {v['us_close_index']}；"
+                     f"期货合约 {v['futures_contract']} {x0['futures_mid']}"
                      f" / 昨结算 {x0['futures_settle']}（{(x0['futures_move'] - 1) * 100:+.2f}%，"
                      f"基差 {'—' if x0['basis'] is None else f'{x0['basis'] * 1e4:.1f}bp'}）；即期汇率 {x0['fx_spot']}")
     pairs = [(r["code"], r["to_next"]) for r in v["rows"] if r["to_next"]]

@@ -1,6 +1,6 @@
 {
   "nature": "SETTLEMENT_AND_ROLL_CHECK (原始日志重解析，无外部请求)",
-  "generated_utc": "2026-09-16T07:56:17+00:00",
+  "generated_utc": "2026-09-16T08:26:30+00:00",
   "target_date": "2026-09-16",
   "next_quarterly_expiry": "2026-09-18",
   "in_roll_window_today": true,
@@ -36,157 +36,482 @@
       "roll_window": true
     }
   ],
-  "kline_basis": {
+  "contract_identity": [
+    {
+      "bj_date": "2026-09-16",
+      "continuous_matches": [
+        "NQ2609"
+      ],
+      "samples": 1,
+      "quarterlies": {
+        "NQ2609": {
+          "CALCULATED": "29063.450",
+          "BID": "29052.000",
+          "ASK": "29054.250",
+          "SETTLE": "28955.000"
+        },
+        "NQ2612": {
+          "CALCULATED": "29350.300",
+          "BID": "29343.750",
+          "ASK": "29345.000",
+          "SETTLE": "29246.750"
+        }
+      }
+    }
+  ],
+  "kline_basis_changes": {
+    "note": "日线收盘与指数收盘不同刻；以下为探索性分布，既不是误差上界，也不能外推到盘中区间",
     "days": 426,
     "from": "2025-01-02",
     "to": "2026-09-15",
-    "quarterly_rolls": [
+    "abs_basis_change_bp_full_sample": {
+      "n": 425,
+      "median": 13.3,
+      "p95": 81.7,
+      "max": 318.1
+    },
+    "abs_basis_change_bp_excluding_roll_windows": {
+      "n": 361,
+      "median": 13.2,
+      "p95": 77.1,
+      "max": 318.1
+    },
+    "excluded_criterion": "季月到期前 11 天至到期日（与被测幅度无关）",
+    "suspected_roll_days": [
       {
         "date": "2025-03-20",
-        "jump_bp": 109,
+        "basis_change_bp": 109.2,
+        "return_diff_bp": 108.8,
+        "in_roll_window": true,
         "nearest_quarterly_expiry": "2025-03-21",
         "days_before_expiry": 1
       },
       {
         "date": "2025-06-18",
-        "jump_bp": 108,
+        "basis_change_bp": 107.9,
+        "return_diff_bp": 107.9,
+        "in_roll_window": true,
         "nearest_quarterly_expiry": "2025-06-20",
         "days_before_expiry": 2
       },
       {
         "date": "2025-09-17",
-        "jump_bp": 108,
+        "basis_change_bp": 107.8,
+        "return_diff_bp": 107.5,
+        "in_roll_window": true,
         "nearest_quarterly_expiry": "2025-09-19",
         "days_before_expiry": 2
       },
       {
         "date": "2025-12-17",
-        "jump_bp": 145,
+        "basis_change_bp": 145.0,
+        "return_diff_bp": 142.5,
+        "in_roll_window": true,
         "nearest_quarterly_expiry": "2025-12-19",
         "days_before_expiry": 2
       },
       {
         "date": "2026-03-18",
-        "jump_bp": 64,
+        "basis_change_bp": 64.0,
+        "return_diff_bp": 63.1,
+        "in_roll_window": true,
         "nearest_quarterly_expiry": "2026-03-20",
         "days_before_expiry": 2
       },
       {
         "date": "2026-06-08",
-        "jump_bp": 51,
+        "basis_change_bp": 51.3,
+        "return_diff_bp": 52.3,
+        "in_roll_window": true,
         "nearest_quarterly_expiry": "2026-06-19",
         "days_before_expiry": 11
       },
       {
         "date": "2026-06-16",
-        "jump_bp": 117,
+        "basis_change_bp": 116.9,
+        "return_diff_bp": 114.7,
+        "in_roll_window": true,
         "nearest_quarterly_expiry": "2026-06-19",
         "days_before_expiry": 3
       }
     ],
-    "other_jumps": [
+    "large_changes_both_directions": [
       {
         "date": "2025-02-03",
-        "jump_bp": 76,
+        "basis_change_bp": 75.8,
+        "return_diff_bp": 74.9,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-03-21",
         "days_before_expiry": 46
       },
       {
+        "date": "2025-02-04",
+        "basis_change_bp": -112.2,
+        "return_diff_bp": -112.3,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": 45
+      },
+      {
+        "date": "2025-03-05",
+        "basis_change_bp": -98.0,
+        "return_diff_bp": -98.4,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": 16
+      },
+      {
         "date": "2025-03-06",
-        "jump_bp": 69,
+        "basis_change_bp": 69.2,
+        "return_diff_bp": 67.4,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-03-21",
         "days_before_expiry": 15
       },
       {
+        "date": "2025-03-07",
+        "basis_change_bp": -57.5,
+        "return_diff_bp": -57.6,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": 14
+      },
+      {
+        "date": "2025-03-14",
+        "basis_change_bp": -54.6,
+        "return_diff_bp": -55.8,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": 7
+      },
+      {
+        "date": "2025-03-20",
+        "basis_change_bp": 109.2,
+        "return_diff_bp": 108.8,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": 1
+      },
+      {
+        "date": "2025-03-28",
+        "basis_change_bp": -58.8,
+        "return_diff_bp": -56.7,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": -7
+      },
+      {
+        "date": "2025-04-02",
+        "basis_change_bp": -318.1,
+        "return_diff_bp": -317.8,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": -12
+      },
+      {
         "date": "2025-04-03",
-        "jump_bp": 304,
+        "basis_change_bp": 303.6,
+        "return_diff_bp": 294.1,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-03-21",
         "days_before_expiry": -13
       },
       {
         "date": "2025-04-07",
-        "jump_bp": 64,
+        "basis_change_bp": 64.5,
+        "return_diff_bp": 64.3,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-03-21",
         "days_before_expiry": -17
       },
       {
         "date": "2025-04-30",
-        "jump_bp": 104,
+        "basis_change_bp": 104.3,
+        "return_diff_bp": 104.1,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-03-21",
         "days_before_expiry": -40
       },
       {
+        "date": "2025-05-01",
+        "basis_change_bp": -134.7,
+        "return_diff_bp": -134.3,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": -41
+      },
+      {
         "date": "2025-05-28",
-        "jump_bp": 68,
+        "basis_change_bp": 67.7,
+        "return_diff_bp": 67.2,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-06-20",
         "days_before_expiry": 23
       },
       {
+        "date": "2025-05-29",
+        "basis_change_bp": -86.3,
+        "return_diff_bp": -85.7,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-06-20",
+        "days_before_expiry": 22
+      },
+      {
+        "date": "2025-06-18",
+        "basis_change_bp": 107.9,
+        "return_diff_bp": 107.9,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2025-06-20",
+        "days_before_expiry": 2
+      },
+      {
         "date": "2025-07-30",
-        "jump_bp": 73,
+        "basis_change_bp": 73.3,
+        "return_diff_bp": 73.0,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-06-20",
         "days_before_expiry": -40
       },
       {
+        "date": "2025-07-31",
+        "basis_change_bp": -87.0,
+        "return_diff_bp": -85.4,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-06-20",
+        "days_before_expiry": -41
+      },
+      {
+        "date": "2025-09-17",
+        "basis_change_bp": 107.8,
+        "return_diff_bp": 107.5,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2025-09-19",
+        "days_before_expiry": 2
+      },
+      {
+        "date": "2025-10-10",
+        "basis_change_bp": -89.3,
+        "return_diff_bp": -85.5,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-09-19",
+        "days_before_expiry": -21
+      },
+      {
         "date": "2025-10-13",
-        "jump_bp": 76,
+        "basis_change_bp": 76.3,
+        "return_diff_bp": 78.0,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-09-19",
         "days_before_expiry": -24
       },
       {
         "date": "2025-10-30",
-        "jump_bp": 122,
+        "basis_change_bp": 122.2,
+        "return_diff_bp": 120.0,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-09-19",
         "days_before_expiry": -41
       },
       {
+        "date": "2025-10-31",
+        "basis_change_bp": -112.4,
+        "return_diff_bp": -111.1,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-09-19",
+        "days_before_expiry": -42
+      },
+      {
         "date": "2025-11-19",
-        "jump_bp": 117,
+        "basis_change_bp": 117.2,
+        "return_diff_bp": 117.7,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2025-12-19",
         "days_before_expiry": 30
       },
       {
+        "date": "2025-11-20",
+        "basis_change_bp": -120.6,
+        "return_diff_bp": -116.2,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2025-12-19",
+        "days_before_expiry": 29
+      },
+      {
+        "date": "2025-12-12",
+        "basis_change_bp": -55.5,
+        "return_diff_bp": -54.1,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2025-12-19",
+        "days_before_expiry": 7
+      },
+      {
+        "date": "2025-12-17",
+        "basis_change_bp": 145.0,
+        "return_diff_bp": 142.5,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2025-12-19",
+        "days_before_expiry": 2
+      },
+      {
+        "date": "2026-01-29",
+        "basis_change_bp": -56.3,
+        "return_diff_bp": -55.5,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": 50
+      },
+      {
         "date": "2026-02-04",
-        "jump_bp": 58,
+        "basis_change_bp": 57.9,
+        "return_diff_bp": 56.7,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2026-03-20",
         "days_before_expiry": 44
       },
       {
+        "date": "2026-02-05",
+        "basis_change_bp": -140.8,
+        "return_diff_bp": -137.6,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": 43
+      },
+      {
         "date": "2026-02-06",
-        "jump_bp": 63,
+        "basis_change_bp": 62.7,
+        "return_diff_bp": 64.4,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2026-03-20",
         "days_before_expiry": 42
       },
       {
+        "date": "2026-02-26",
+        "basis_change_bp": -54.4,
+        "return_diff_bp": -53.5,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": 22
+      },
+      {
+        "date": "2026-03-18",
+        "basis_change_bp": 64.0,
+        "return_diff_bp": 63.1,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": 2
+      },
+      {
         "date": "2026-03-24",
-        "jump_bp": 79,
+        "basis_change_bp": 79.2,
+        "return_diff_bp": 77.9,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2026-03-20",
         "days_before_expiry": -4
       },
       {
+        "date": "2026-03-25",
+        "basis_change_bp": -81.7,
+        "return_diff_bp": -80.9,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": -5
+      },
+      {
+        "date": "2026-04-29",
+        "basis_change_bp": -73.7,
+        "return_diff_bp": -73.7,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": -40
+      },
+      {
         "date": "2026-04-30",
-        "jump_bp": 67,
+        "basis_change_bp": 66.9,
+        "return_diff_bp": 67.7,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2026-03-20",
         "days_before_expiry": -41
       },
       {
+        "date": "2026-06-03",
+        "basis_change_bp": -51.8,
+        "return_diff_bp": -51.5,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": 16
+      },
+      {
+        "date": "2026-06-08",
+        "basis_change_bp": 51.3,
+        "return_diff_bp": 52.3,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": 11
+      },
+      {
+        "date": "2026-06-16",
+        "basis_change_bp": 116.9,
+        "return_diff_bp": 114.7,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": 3
+      },
+      {
+        "date": "2026-06-18",
+        "basis_change_bp": -53.0,
+        "return_diff_bp": -53.5,
+        "in_roll_window": true,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": 1
+      },
+      {
         "date": "2026-06-24",
-        "jump_bp": 164,
+        "basis_change_bp": 163.7,
+        "return_diff_bp": 160.8,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2026-06-19",
         "days_before_expiry": -5
       },
       {
+        "date": "2026-06-25",
+        "basis_change_bp": -191.3,
+        "return_diff_bp": -187.1,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": -6
+      },
+      {
+        "date": "2026-06-26",
+        "basis_change_bp": -51.6,
+        "return_diff_bp": -50.5,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": -7
+      },
+      {
         "date": "2026-07-30",
-        "jump_bp": 57,
+        "basis_change_bp": 56.8,
+        "return_diff_bp": 58.5,
+        "in_roll_window": false,
         "nearest_quarterly_expiry": "2026-06-19",
         "days_before_expiry": -41
+      },
+      {
+        "date": "2026-07-31",
+        "basis_change_bp": -77.1,
+        "return_diff_bp": -76.9,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": -42
+      },
+      {
+        "date": "2026-08-27",
+        "basis_change_bp": -72.4,
+        "return_diff_bp": -72.9,
+        "in_roll_window": false,
+        "nearest_quarterly_expiry": "2026-09-18",
+        "days_before_expiry": 22
       }
-    ],
-    "daily_tracking_abs_diff_bp": {
-      "n": 402,
-      "median": 12.5,
-      "p95": 54.4,
-      "max": 318.1
-    }
+    ]
   }
 }
