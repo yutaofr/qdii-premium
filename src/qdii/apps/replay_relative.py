@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, timedelta
 from pathlib import Path
@@ -36,6 +37,7 @@ def verify(data_root: Path, repo: Path, dates: list[str], *, stream: bool = Fals
     report: dict[str, Any] = {"mode": "stream" if stream else "bundle", "dates": sorted(dates),
                               "store": str(store.dir), "snapshots": len(records), "verified": 0,
                               "integrity_failures": 0, "mismatches": 0, "version_changes": 0,
+                              "legacy_integrity_ok": 0, "legacy_integrity_failures": 0,
                               "missing_triggers": 0, "examples": [], "status": "NO_DATA"}
     if not records:  # 评审 R5：零样本不是成功
         return report
@@ -46,9 +48,19 @@ def verify(data_root: Path, repo: Path, dates: list[str], *, stream: bool = Fals
                                        "cutoff_utc_ns": rec["bundle"]["cutoff_utc_ns"], "detail": detail})
 
     current = [r for r in records if r["bundle"].get("schema") == SCHEMA_VERSION]
-    for rec in records:  # 旧输入包结构无法按当前代码复算：列为版本变更，不崩溃也不冒充通过
+    for rec in records:
+        # 旧结构输入包无法按当前代码复算：列为版本变更，不崩溃也不冒充通过。
+        # 但仍可核验它作为历史记录未被篡改：内容重新规范化后的哈希应等于当时写下的 bundle_id。
+        # 这与"用当前规则重新评估历史输入"是两件事，后者可能因规则收紧而不可用，不改写原始记录。
         if rec["bundle"].get("schema") != SCHEMA_VERSION:
             report["version_changes"] += 1
+            digest = hashlib.sha256(json.dumps(rec["bundle"], sort_keys=True, separators=(",", ":"),
+                                               ensure_ascii=False).encode("utf-8")).hexdigest()
+            if digest == rec["bundle_id"]:
+                report["legacy_integrity_ok"] += 1
+            else:
+                report["legacy_integrity_failures"] += 1
+                example("LEGACY_INTEGRITY", rec, "stored bundle does not hash to its bundle_id")
             example("SCHEMA", rec, {"stored": rec["bundle"].get("schema"), "current": SCHEMA_VERSION})
     records = current
     if not records:

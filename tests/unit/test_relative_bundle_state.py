@@ -1,5 +1,6 @@
 """输入包确定性、质量对象（QS-02/03）、增量状态（as-of、净值修订隔离）、快照存储与回放校验。"""
 
+import hashlib
 import json
 from dataclasses import asdict, replace
 from datetime import date, datetime
@@ -417,10 +418,19 @@ def test_old_schema_snapshot_reported_as_version_change_not_crash(tmp_path):
     store.append(canonical_json(b), snapshot_to_dict(evaluate_bundle(b)), 0)
     path = store.path_for(b.cutoff_utc_ns)
     rec = json.loads(path.read_text())
-    rec["bundle"]["schema"] = SCHEMA_VERSION - 1
+    rec["bundle"]["schema"] = SCHEMA_VERSION - 1  # 模拟旧代码写下的记录：bundle_id 与当时内容一致
+    rec["bundle_id"] = hashlib.sha256(json.dumps(rec["bundle"], sort_keys=True, separators=(",", ":"),
+                                                 ensure_ascii=False).encode()).hexdigest()
     path.write_text(path.read_text() + json.dumps(rec) + "\n")
     report = verify(tmp_path, REPO, ["2026-09-15"])
     assert report["status"] == "VERSION_CHANGED" and report["verified"] == 1 and report["version_changes"] == 1
+    assert report["legacy_integrity_ok"] == 1  # 旧记录本身未被篡改：内容哈希仍等于当时的 bundle_id
     path.write_text(json.dumps(rec) + "\n")  # 只有旧结构快照：流模式同样不崩溃
     report = verify(tmp_path, REPO, ["2026-09-15"], stream=True)
     assert report["status"] == "VERSION_CHANGED" and report["examples"][0]["kind"] == "SCHEMA"
+
+    tampered = json.loads(json.dumps(rec))  # 篡改旧记录：完整性核验必须发现
+    tampered["bundle"]["cutoff_utc_ns"] += 1
+    path.write_text(json.dumps(tampered) + "\n")
+    report = verify(tmp_path, REPO, ["2026-09-15"])
+    assert report["legacy_integrity_failures"] == 1 and report["legacy_integrity_ok"] == 0

@@ -35,6 +35,7 @@ REPO = Path(__file__).resolve().parents[1]
 DATA = Path.home() / "qdii-data"
 SH = ZoneInfo("Asia/Shanghai")
 KLINE_ENDPOINTS = ("sina.nq_daily_kline", "research.sina.nq_daily_kline")
+CONTINUOUS = "CONTINUOUS"  # 月份未知的连续代码 hf_NQ
 ROLL_JUMP_BP = 50.0
 HISTORY_DAYS = 30
 
@@ -95,31 +96,43 @@ def identity_observations() -> list[dict]:
     return [seen[k] for k in sorted(seen)]
 
 
-def settle_observations() -> dict[date, dict]:
-    """每个北京日期的首条与末条 hf_NQ：昨结算、买卖价中点。"""
+def settle_observations() -> dict[tuple[date, str], dict]:
+    """每个北京日期 × 合约的昨结算与买卖价中点。
+
+    按合约分开：连续代码 CONTINUOUS 的观测**不能算作某个月份合约的观测**（D4 复核要求）。
+    生产估算使用的是身份已知的季月合约，其结算日映射需要该合约自己的样本。
+    """
     dates = [(date.today() - timedelta(days=i)).isoformat() for i in range(HISTORY_DAYS, -1, -1)]  # noqa: DTZ011
-    out: dict[date, dict] = {}
-    for msg in rawlog.iter_messages(DATA, dates=dates):
-        if msg.endpoint_id != "sina.hf_NQ" or msg.status != 200:
-            continue
-        recs = {r.price_type: r for r in sina_hf_v2.parse(msg).records if isinstance(r, MarketQuote)}
-        settle, bid, ask = recs.get(PriceType.SETTLE), recs.get(PriceType.BID), recs.get(PriceType.ASK)
-        if settle is None or settle.value is None or bid is None or ask is None:
-            continue
-        t = bid.provider_time.utc_ns
-        if t is None:
-            continue
-        day = datetime.fromtimestamp(t / 1e9, tz=SH).date()
-        row = out.setdefault(day, {"settle": str(settle.value), "samples": 0, "first_bj": None, "last_bj": None,
-                                   "mid_first": None, "mid_last": None})
-        mid = (bid.value + ask.value) / 2 if bid.value and ask.value else None
-        stamp = datetime.fromtimestamp(t / 1e9, tz=SH).strftime("%H:%M:%S")
-        row["samples"] += 1
-        if row["first_bj"] is None:
-            row["first_bj"], row["mid_first"] = stamp, str(mid)
-        row["last_bj"], row["mid_last"] = stamp, str(mid)
-        if row["settle"] != str(settle.value):  # 同一北京日内昨结算变化：立即可见
-            row["settle_changed_within_day"] = str(settle.value)
+    out: dict[tuple[date, str], dict] = {}
+    for root in (DATA, DATA / "research"):
+        for msg in rawlog.iter_messages(root, dates=dates):
+            if msg.endpoint_id not in ("sina.hf_NQ", "research.sina.hf_NQ") or msg.status != 200:
+                continue
+            per: dict[str, dict] = {}
+            for r in sina_hf_v2.parse(msg).records:
+                if isinstance(r, MarketQuote):
+                    per.setdefault(CONTINUOUS, {})[r.price_type] = r
+            for r in sina_hf_quarterly_v1.parse(msg).records:
+                per.setdefault(r.contract_id or "?", {})[r.price_type] = r
+            for contract, recs in per.items():
+                settle, bid, ask = recs.get(PriceType.SETTLE), recs.get(PriceType.BID), recs.get(PriceType.ASK)
+                if settle is None or settle.value is None or bid is None or ask is None:
+                    continue
+                t = bid.provider_time.utc_ns
+                if t is None:
+                    continue
+                day = datetime.fromtimestamp(t / 1e9, tz=SH).date()
+                row = out.setdefault((day, contract), {
+                    "settle": str(settle.value), "samples": 0, "first_bj": None, "last_bj": None,
+                    "mid_first": None, "mid_last": None})
+                mid = (bid.value + ask.value) / 2 if bid.value and ask.value else None
+                stamp = datetime.fromtimestamp(t / 1e9, tz=SH).strftime("%H:%M:%S")
+                row["samples"] += 1
+                if row["first_bj"] is None:
+                    row["first_bj"], row["mid_first"] = stamp, str(mid)
+                row["last_bj"], row["mid_last"] = stamp, str(mid)
+                if row["settle"] != str(settle.value):  # 同一北京日内昨结算变化：立即可见
+                    row["settle_changed_within_day"] = str(settle.value)
     return out
 
 
@@ -132,23 +145,26 @@ def main(day: str) -> None:
         return cal.last_session_on_or_before("NASDAQ", before - timedelta(days=1))
 
     settle_rows = []
-    prev_basis = None
-    for d in sorted(obs):
+    prev_basis: dict[str, float] = {}  # 逐合约比较，不跨合约算变化
+    for d, contract in sorted(obs):
+        o = obs[(d, contract)]
         c = last_us_session(d)
         close = idx.get(c) if c else None
-        settle = float(obs[d]["settle"])
-        basis = (settle / close - 1) * 1e4 if close else None
-        row = {"bj_date": d.isoformat(), "c": c.isoformat() if c else None, "settle": obs[d]["settle"],
-               "index_close_c": close, "basis_bp": None if basis is None else round(basis, 1),
-               "delta_basis_bp": None if basis is None or prev_basis is None else round(basis - prev_basis, 1),
-               "samples": obs[d]["samples"], "first_bj": obs[d]["first_bj"], "last_bj": obs[d]["last_bj"],
-               "mid_first": obs[d]["mid_first"], "mid_last": obs[d]["mid_last"],
-               "settle_changed_within_day": obs[d].get("settle_changed_within_day"),
+        basis = (float(o["settle"]) / close - 1) * 1e4 if close else None
+        previous = prev_basis.get(contract)
+        row = {"bj_date": d.isoformat(), "contract": contract, "c": c.isoformat() if c else None,
+               "settle": o["settle"], "index_close_c": close,
+               "basis_bp": None if basis is None else round(basis, 1),
+               "delta_basis_bp": None if basis is None or previous is None else round(basis - previous, 1),
+               "samples": o["samples"], "first_bj": o["first_bj"], "last_bj": o["last_bj"],
+               "mid_first": o["mid_first"], "mid_last": o["mid_last"],
+               "settle_changed_within_day": o.get("settle_changed_within_day"),
                "roll_window": in_roll_window(c) if c else None}
         if row["delta_basis_bp"] is not None and abs(row["delta_basis_bp"]) > ROLL_JUMP_BP:
-            row["flag"] = "SETTLE_BASIS_JUMP"  # 换月或结算日映射异常
+            row["flag"] = "SETTLE_BASIS_JUMP"  # 换月或结算日映射异常（仅研究标记，生产不消费）
         settle_rows.append(row)
-        prev_basis = basis if basis is not None else prev_basis
+        if basis is not None:
+            prev_basis[contract] = basis
 
     common = sorted(set(kl) & set(idx))
     kbasis = {d: (kl[d] / idx[d] - 1) * 1e4 for d in common}
@@ -198,7 +214,7 @@ def main(day: str) -> None:
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"下一个季月到期 {next_expiry}，今日换月窗口内：{out['in_roll_window_today']}")
     for r in settle_rows:
-        print(f"  {r['bj_date']} c={r['c']} 昨结算 {r['settle']} 指数 {r['index_close_c']} "
+        print(f"  {r['bj_date']} {r['contract']:<10} c={r['c']} 昨结算 {r['settle']} 指数 {r['index_close_c']} "
               f"基差 {r['basis_bp']}bp Δ {r['delta_basis_bp']} {r.get('flag') or ''}")
     for r in out["contract_identity"]:
         print(f"  身份比对 {r['bj_date']}：连续代码 = {r['continuous_matches']}（{r['samples']} 条样本）")
