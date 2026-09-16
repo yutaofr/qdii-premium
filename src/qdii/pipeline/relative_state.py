@@ -22,6 +22,7 @@ from qdii.contracts import (
     sina_a_share_v1,
     sina_hf_v2,
 )
+from qdii.core.anchor import in_roll_window
 from qdii.core.enav import EnavPolicy
 from qdii.core.relative import RelativeMode, RelativePolicy
 from qdii.core.relative_bundle import SCHEMA_VERSION, MemberSpec, RelativeBundle
@@ -428,6 +429,7 @@ class RelativeState:
             us_close_index=str(us_close_index) if us_close_index is not None else None,
             us_close_msg_id=us_close_msg,
             enav_policy=tuple(sorted(asdict(self.enav_policy).items())),
+            roll_window=in_roll_window(us_close_date) if us_close_date is not None else False,
         )
 
 

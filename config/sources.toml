@@ -103,6 +103,14 @@ windows = [
   { tz = "Asia/Shanghai", start = "09:10", end = "15:10", interval_s = 5 },
 ]
 
+# 新浪连续合约日线：独立的日频序列，用于换月识别与结算字段核查（D4）。只录制，不进入在线估算。
+[[endpoint]]
+id = "sina.nq_daily_kline"
+source_id = "sina"
+url = "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_NQ=/GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=NQ"
+headers = { Referer = "https://finance.sina.com.cn/" }
+idle_interval_s = 3600
+
 # ---------------- 汇率 ----------------
 
 [[endpoint]]

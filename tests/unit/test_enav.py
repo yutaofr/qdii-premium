@@ -23,7 +23,7 @@ T = bj(14, 49, 55)
 
 BASE = EnavInput(
     code="A", price=2.2, quote_time_utc_ns=T, cutoff_utc_ns=T + 5 * 10**9, current=True, phase_ok=True,
-    calendar_ok=True, nav=2.0, nav_usable=True, index_date=date(2026, 9, 11),
+    calendar_ok=True, roll_window=False, nav=2.0, nav_usable=True, index_date=date(2026, 9, 11),
     index_at_anchor=29368.44, fx_at_anchor=6.7743, us_close_date=date(2026, 9, 14), us_close_utc_ns=C_0914,
     index_at_close=29127.16, futures_mid=29058.375, futures_settle=29152.25, futures_time_utc_ns=T - 4 * 10**9,
     fx_spot=6.7136, fx_time_utc_ns=T - 8 * 10**9,
@@ -67,6 +67,8 @@ def test_nav_already_at_last_us_close_has_no_index_move():
     ({"fx_time_utc_ns": T - 121 * 10**9}, ReasonCode.FX_STALE),
     ({"futures_settle": 29127.16 * 0.99}, ReasonCode.SETTLEMENT_BASIS_SUSPECT),
     ({"futures_settle": 29127.16 * 1.04}, ReasonCode.SETTLEMENT_BASIS_SUSPECT),
+    # 换月窗口内，期货段变动像合约切换（实测跳变 ≥ 50bp）
+    ({"roll_window": True, "futures_mid": 29152.25 * 1.011}, ReasonCode.ROLL_ANCHOR_MISSING),
 ])
 def test_missing_or_failed_input_makes_enav_unavailable_with_reason(change, reason):
     r = evaluate_enav(replace(BASE, **change), EnavPolicy())
@@ -235,3 +237,21 @@ def test_input_gaps_name_endpoints_that_can_fill_missing_estimate_inputs():
     assert input_gaps(st.bundle(bj(14, 50))) == set()
     st.navs.pop("513100")
     assert input_gaps(st.bundle(bj(14, 50))) == {"eastmoney.lsjz.513100"}
+
+
+def test_roll_window_is_disclosed_and_contract_switch_blocks_the_estimate():
+    """VM-07：换月窗口内始终披露；期货段变动超过阈值（像换月跳变）时不出估算。"""
+    normal = evaluate_enav(replace(BASE, roll_window=True), EnavPolicy())
+    assert normal.status == "PROXY_ANCHOR" and ReasonCode.ROLL_WINDOW in normal.reasons
+    jumped = evaluate_enav(replace(BASE, roll_window=True, futures_mid=BASE.futures_settle * 1.011), EnavPolicy())
+    assert jumped.status == "UNAVAILABLE" and ReasonCode.ROLL_ANCHOR_MISSING in jumped.reasons
+    # 窗口外同样的跳变不拦截（只按基差与时效判断）
+    outside = evaluate_enav(replace(BASE, roll_window=False, futures_mid=BASE.futures_settle * 1.011), EnavPolicy())
+    assert outside.status == "PROXY_ANCHOR"
+
+
+def test_state_marks_roll_window_from_us_close_date():
+    st = enav_state()  # c = 2026-09-14，9 月到期日 09-18，处于换月窗口（到期前 11 天内）
+    b = st.bundle(bj(14, 50))
+    assert b.roll_window is True
+    assert all(ReasonCode.ROLL_WINDOW in x.reasons for x in evaluate_bundle(b).enav)

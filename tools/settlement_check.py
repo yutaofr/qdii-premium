@@ -1,0 +1,174 @@
+"""D4 证据：昨结算的结算日映射、合约身份与换月一致性核查（勘误 E8 门槛①②③）。
+
+三条独立线索，全部只从原始日志重解析，不发请求：
+
+1. **结算日映射**：每个 A 股交易时段观察到的 hf_NQ 昨结算，与该时段之前最近一个美股交易日 c 的 NDX 收盘比较。
+   若字段确实是 c 日结算，基差应该小且随到期临近收敛；若落后一天，基差会随指数日变动整体平移（约 ±1%）。
+2. **合约身份与换月**：新浪连续合约日线收盘 / NDX 收盘的基差序列。到期前若出现约 +100bp 的跳升，
+   即为连续代码切换到下一季合约；跳升幅度与时点是合约身份的直接证据。
+3. **期货段误差上界**：剔除换月日后，期货日收益与指数日收益之差的分布。新浪日线收盘与指数收盘不同刻，
+   因此这是 F(t)/F(c) 这一段误差的上界，不是精确测量。
+
+用法：uv run python tools/settlement_check.py [YYYY-MM-DD]
+输出：reports/mvp/evidence/settlement-check-<date>.json
+"""
+
+from __future__ import annotations
+
+import itertools
+import json
+import re
+import statistics
+import sys
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from qdii.apps.relative_snapshot import new_state
+from qdii.contracts import index_history_v1, sina_hf_v2
+from qdii.core.anchor import in_roll_window, third_friday
+from qdii.core.types import MarketQuote, PriceType
+from qdii.io import rawlog
+
+REPO = Path(__file__).resolve().parents[1]
+DATA = Path.home() / "qdii-data"
+SH = ZoneInfo("Asia/Shanghai")
+KLINE_ENDPOINTS = ("sina.nq_daily_kline", "research.sina.nq_daily_kline")
+ROLL_JUMP_BP = 50.0
+HISTORY_DAYS = 30
+
+
+def index_closes() -> dict[date, float]:
+    """NDX 收盘：生产采集 + 研究抓取，同一契约解析。"""
+    out: dict[date, float] = {}
+    for root, days in ((DATA, HISTORY_DAYS), (DATA / "research", 3)):
+        dates = [(date.today() - timedelta(days=i)).isoformat() for i in range(days, -1, -1)]  # noqa: DTZ011
+        for msg in rawlog.iter_messages(root, dates=dates):
+            if "nasdaq" not in msg.endpoint_id or msg.status != 200:
+                continue
+            for rec in index_history_v1.parse_nasdaq(msg).records:
+                if getattr(rec, "close", None) is not None:
+                    out[rec.trade_date] = float(rec.close)
+    return out
+
+
+def kline() -> dict[date, float]:
+    dates = [(date.today() - timedelta(days=i)).isoformat() for i in range(HISTORY_DAYS, -1, -1)]  # noqa: DTZ011
+    rows: dict[date, float] = {}
+    for root in (DATA, DATA / "research"):
+        for msg in rawlog.iter_messages(root, dates=dates):
+            if msg.endpoint_id not in KLINE_ENDPOINTS or msg.status != 200:
+                continue
+            body = msg.body.decode("utf-8", "replace")
+            m = re.search(r"=\((\[.*\])\);?", body, re.DOTALL)
+            if m is None:
+                continue
+            for r in json.loads(m.group(1)):
+                if float(r["close"]) > 0:
+                    rows[date.fromisoformat(r["date"])] = float(r["close"])
+    return rows
+
+
+def settle_observations() -> dict[date, dict]:
+    """每个北京日期的首条与末条 hf_NQ：昨结算、买卖价中点。"""
+    dates = [(date.today() - timedelta(days=i)).isoformat() for i in range(HISTORY_DAYS, -1, -1)]  # noqa: DTZ011
+    out: dict[date, dict] = {}
+    for msg in rawlog.iter_messages(DATA, dates=dates):
+        if msg.endpoint_id != "sina.hf_NQ" or msg.status != 200:
+            continue
+        recs = {r.price_type: r for r in sina_hf_v2.parse(msg).records if isinstance(r, MarketQuote)}
+        settle, bid, ask = recs.get(PriceType.SETTLE), recs.get(PriceType.BID), recs.get(PriceType.ASK)
+        if settle is None or settle.value is None or bid is None or ask is None:
+            continue
+        t = bid.provider_time.utc_ns
+        if t is None:
+            continue
+        day = datetime.fromtimestamp(t / 1e9, tz=SH).date()
+        row = out.setdefault(day, {"settle": str(settle.value), "samples": 0, "first_bj": None, "last_bj": None,
+                                   "mid_first": None, "mid_last": None})
+        mid = (bid.value + ask.value) / 2 if bid.value and ask.value else None
+        stamp = datetime.fromtimestamp(t / 1e9, tz=SH).strftime("%H:%M:%S")
+        row["samples"] += 1
+        if row["first_bj"] is None:
+            row["first_bj"], row["mid_first"] = stamp, str(mid)
+        row["last_bj"], row["mid_last"] = stamp, str(mid)
+        if row["settle"] != str(settle.value):  # 同一北京日内昨结算变化：立即可见
+            row["settle_changed_within_day"] = str(settle.value)
+    return out
+
+
+def main(day: str) -> None:
+    target = date.fromisoformat(day)
+    idx, kl, obs = index_closes(), kline(), settle_observations()
+    cal = new_state(REPO).cal
+
+    def last_us_session(before: date) -> date | None:
+        return cal.last_session_on_or_before("NASDAQ", before - timedelta(days=1))
+
+    settle_rows = []
+    prev_basis = None
+    for d in sorted(obs):
+        c = last_us_session(d)
+        close = idx.get(c) if c else None
+        settle = float(obs[d]["settle"])
+        basis = (settle / close - 1) * 1e4 if close else None
+        row = {"bj_date": d.isoformat(), "c": c.isoformat() if c else None, "settle": obs[d]["settle"],
+               "index_close_c": close, "basis_bp": None if basis is None else round(basis, 1),
+               "delta_basis_bp": None if basis is None or prev_basis is None else round(basis - prev_basis, 1),
+               "samples": obs[d]["samples"], "first_bj": obs[d]["first_bj"], "last_bj": obs[d]["last_bj"],
+               "mid_first": obs[d]["mid_first"], "mid_last": obs[d]["mid_last"],
+               "settle_changed_within_day": obs[d].get("settle_changed_within_day"),
+               "roll_window": in_roll_window(c) if c else None}
+        if row["delta_basis_bp"] is not None and abs(row["delta_basis_bp"]) > ROLL_JUMP_BP:
+            row["flag"] = "SETTLE_BASIS_JUMP"  # 换月或结算日映射异常
+        settle_rows.append(row)
+        prev_basis = basis if basis is not None else prev_basis
+
+    common = sorted(set(kl) & set(idx))
+    kbasis = {d: (kl[d] / idx[d] - 1) * 1e4 for d in common}
+    rolls, diffs = [], []
+    for a, b in itertools.pairwise(common):
+        delta = kbasis[b] - kbasis[a]
+        if delta > ROLL_JUMP_BP:
+            expiry = min((third_friday(b.year, m) for m in (3, 6, 9, 12)), key=lambda e: abs((e - b).days))
+            rolls.append({"date": b.isoformat(), "jump_bp": round(delta), "nearest_quarterly_expiry":
+                          expiry.isoformat(), "days_before_expiry": (expiry - b).days})
+        else:
+            diffs.append(abs(delta))
+    quarterly = [r for r in rolls if 0 <= r["days_before_expiry"] <= 11]
+    diffs.sort()
+    next_expiry = min((third_friday(target.year, m) for m in (3, 6, 9, 12) if third_friday(target.year, m) >= target),
+                      default=third_friday(target.year + 1, 3))
+    out = {
+        "nature": "SETTLEMENT_AND_ROLL_CHECK (原始日志重解析，无外部请求)",
+        "generated_utc": datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"),
+        "target_date": day,
+        "next_quarterly_expiry": next_expiry.isoformat(),
+        "in_roll_window_today": in_roll_window(target),
+        "settlement_observations": settle_rows,
+        "kline_basis": {
+            "days": len(common), "from": common[0].isoformat() if common else None,
+            "to": common[-1].isoformat() if common else None,
+            "quarterly_rolls": quarterly, "other_jumps": [r for r in rolls if r not in quarterly],
+            "daily_tracking_abs_diff_bp": {
+                "n": len(diffs), "median": round(statistics.median(diffs), 1) if diffs else None,
+                "p95": round(diffs[int(0.95 * len(diffs))], 1) if diffs else None,
+                "max": round(max(diffs), 1) if diffs else None},
+        },
+    }
+    path = REPO / "reports" / "mvp" / "evidence" / f"settlement-check-{day}.json"
+    path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"下一个季月到期 {next_expiry}，今日换月窗口内：{out['in_roll_window_today']}")
+    for r in settle_rows:
+        print(f"  {r['bj_date']} c={r['c']} 昨结算 {r['settle']} 指数 {r['index_close_c']} "
+              f"基差 {r['basis_bp']}bp Δ {r['delta_basis_bp']} {r.get('flag') or ''}")
+    k = out["kline_basis"]
+    print(f"日线基差 {k['days']} 天（{k['from']}→{k['to']}）：季月换月 {len(quarterly)} 次 "
+          f"{[(r['date'], r['jump_bp'], r['days_before_expiry']) for r in quarterly]}")
+    print(f"期货段日误差上界：中位 {k['daily_tracking_abs_diff_bp']['median']}bp、"
+          f"P95 {k['daily_tracking_abs_diff_bp']['p95']}bp")
+    print(path)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else datetime.now(SH).date().isoformat())

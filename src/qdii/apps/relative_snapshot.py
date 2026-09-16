@@ -176,6 +176,8 @@ def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]
                      f"{enav_txt:>10}{eprem:>10}{r['nav'] or '—'!s:>10}{r['nav_date'] or '—'!s:>12}{prem:>12}{rel:>12}"
                      + ("" if r["eligible"] else f"  退出：{','.join(r['reasons'])}")
                      + ("" if x.get("value") is not None else f"  估算不可用：{','.join(x.get('reasons', []))}"))
+    if any("ROLL_WINDOW" in (r["enav"] or {}).get("reasons", []) for r in v["rows"]):
+        lines.append("换月窗口：纳指期货连续合约临近季月到期会切换月份；期货段变动超过 0.6% 时不出估算。")
     if any((r["enav"] or {}).get("status") == "REFERENCE" for r in v["rows"]):
         lines.append("* 收盘参考估算：基于冻结的收盘/午休快照，不代表当前可交易价格。")
     x0 = next((r["enav"] for r in v["rows"] if r["enav"] and r["enav"]["futures_move"] is not None), None)

@@ -1,0 +1,192 @@
+{
+  "nature": "SETTLEMENT_AND_ROLL_CHECK (原始日志重解析，无外部请求)",
+  "generated_utc": "2026-09-16T07:56:17+00:00",
+  "target_date": "2026-09-16",
+  "next_quarterly_expiry": "2026-09-18",
+  "in_roll_window_today": true,
+  "settlement_observations": [
+    {
+      "bj_date": "2026-09-15",
+      "c": "2026-09-14",
+      "settle": "29152.250",
+      "index_close_c": 29127.16,
+      "basis_bp": 8.6,
+      "delta_basis_bp": null,
+      "samples": 1353,
+      "first_bj": "07:39:47",
+      "last_bj": "15:04:51",
+      "mid_first": "29165.375",
+      "mid_last": "29072.000",
+      "settle_changed_within_day": null,
+      "roll_window": true
+    },
+    {
+      "bj_date": "2026-09-16",
+      "c": "2026-09-15",
+      "settle": "28955.000",
+      "index_close_c": 28937.84,
+      "basis_bp": 5.9,
+      "delta_basis_bp": -2.7,
+      "samples": 290,
+      "first_bj": "14:40:43",
+      "last_bj": "15:04:53",
+      "mid_first": "29043.625",
+      "mid_last": "29099.250",
+      "settle_changed_within_day": null,
+      "roll_window": true
+    }
+  ],
+  "kline_basis": {
+    "days": 426,
+    "from": "2025-01-02",
+    "to": "2026-09-15",
+    "quarterly_rolls": [
+      {
+        "date": "2025-03-20",
+        "jump_bp": 109,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": 1
+      },
+      {
+        "date": "2025-06-18",
+        "jump_bp": 108,
+        "nearest_quarterly_expiry": "2025-06-20",
+        "days_before_expiry": 2
+      },
+      {
+        "date": "2025-09-17",
+        "jump_bp": 108,
+        "nearest_quarterly_expiry": "2025-09-19",
+        "days_before_expiry": 2
+      },
+      {
+        "date": "2025-12-17",
+        "jump_bp": 145,
+        "nearest_quarterly_expiry": "2025-12-19",
+        "days_before_expiry": 2
+      },
+      {
+        "date": "2026-03-18",
+        "jump_bp": 64,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": 2
+      },
+      {
+        "date": "2026-06-08",
+        "jump_bp": 51,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": 11
+      },
+      {
+        "date": "2026-06-16",
+        "jump_bp": 117,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": 3
+      }
+    ],
+    "other_jumps": [
+      {
+        "date": "2025-02-03",
+        "jump_bp": 76,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": 46
+      },
+      {
+        "date": "2025-03-06",
+        "jump_bp": 69,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": 15
+      },
+      {
+        "date": "2025-04-03",
+        "jump_bp": 304,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": -13
+      },
+      {
+        "date": "2025-04-07",
+        "jump_bp": 64,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": -17
+      },
+      {
+        "date": "2025-04-30",
+        "jump_bp": 104,
+        "nearest_quarterly_expiry": "2025-03-21",
+        "days_before_expiry": -40
+      },
+      {
+        "date": "2025-05-28",
+        "jump_bp": 68,
+        "nearest_quarterly_expiry": "2025-06-20",
+        "days_before_expiry": 23
+      },
+      {
+        "date": "2025-07-30",
+        "jump_bp": 73,
+        "nearest_quarterly_expiry": "2025-06-20",
+        "days_before_expiry": -40
+      },
+      {
+        "date": "2025-10-13",
+        "jump_bp": 76,
+        "nearest_quarterly_expiry": "2025-09-19",
+        "days_before_expiry": -24
+      },
+      {
+        "date": "2025-10-30",
+        "jump_bp": 122,
+        "nearest_quarterly_expiry": "2025-09-19",
+        "days_before_expiry": -41
+      },
+      {
+        "date": "2025-11-19",
+        "jump_bp": 117,
+        "nearest_quarterly_expiry": "2025-12-19",
+        "days_before_expiry": 30
+      },
+      {
+        "date": "2026-02-04",
+        "jump_bp": 58,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": 44
+      },
+      {
+        "date": "2026-02-06",
+        "jump_bp": 63,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": 42
+      },
+      {
+        "date": "2026-03-24",
+        "jump_bp": 79,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": -4
+      },
+      {
+        "date": "2026-04-30",
+        "jump_bp": 67,
+        "nearest_quarterly_expiry": "2026-03-20",
+        "days_before_expiry": -41
+      },
+      {
+        "date": "2026-06-24",
+        "jump_bp": 164,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": -5
+      },
+      {
+        "date": "2026-07-30",
+        "jump_bp": 57,
+        "nearest_quarterly_expiry": "2026-06-19",
+        "days_before_expiry": -41
+      }
+    ],
+    "daily_tracking_abs_diff_bp": {
+      "n": 402,
+      "median": 12.5,
+      "p95": 54.4,
+      "max": 318.1
+    }
+  }
+}

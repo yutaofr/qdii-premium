@@ -89,8 +89,9 @@ def render_relative(rel: dict[str, Any] | None) -> str:
             p = x["premium"]
             label = ENAV_CN.get(x["status"], x["status"])
             strong = ("b", "b") if x["status"] == "PROXY_ANCHOR" else ("span class='muted'", "span")
+            roll = "；<b>换月窗口</b>" if "ROLL_WINDOW" in x["reasons"] else ""
             enav_cell = (f"<{strong[0]}>{'溢价' if p >= 0 else '折价'} {abs(p) * 100:.2f}%</{strong[1]}>"
-                         f"<br><span class='small'>{label}；估算净值 {x['value']:.4f}</span>")
+                         f"<br><span class='small'>{label}；估算净值 {x['value']:.4f}{roll}</span>")
         else:
             enav_cell = f"—<br><span class='small'>{e(', '.join(x.get('reasons', [])) or '未计算')}</span>"
         enav_detail = ("" if x.get("value") is None else

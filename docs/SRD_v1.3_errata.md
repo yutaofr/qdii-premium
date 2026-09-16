@@ -31,4 +31,4 @@
 | E3 X₀ 关键路径 | 已关闭：PH0-07 历史拟合 + PH0-06 招募说明书条款一致（估值日当日中间价），规则 VERIFIED；共同锚点下 X₀ 约掉 | `reports/phase0/history/…/findings.md`、`reports/phase0/fund_rules/…/findings.md`、`data/fund_rules/` |
 | E6 费用不触发退出 | 已按此实现：只有来源事件字段或增长率断点才判 NONSEPARABLE_EVENT | `core/history_validation.py`、`apps/relative_snapshot.py::_latest_nav` |
 | E7 年龄参照 cutoff | 相对比较按知识截止时刻计算年龄 | `core/relative.py` |
-| E8 昨结算代理锚点 | 已实现（草案，未验证）：盘中估算净值与估算溢价（当前 / 收盘参考 / 不可用三态）；美股收盘实采窗口停用。门槛①：CME 官方说明支持结算时刻，新浪字段的结算日映射与换月行为未证实（CME 网站 2026-09-15 拒绝自动访问，未绕过），改为在用户正常使用期间观察 9/18 到期前后昨结算与买卖价是否同步切换；门槛②③：仅异常筛查 | `core/enav.py`、`contracts/sina_hf_v2.py`、`contracts/cfets_fx_spot_v1.py`、`tests/unit/test_enav.py` |
+| E8 昨结算代理锚点 | 已实现（草案，未验证）：盘中估算净值与估算溢价（当前 / 收盘参考 / 不可用三态）；美股收盘实采窗口停用。门槛①结算日映射：2 个交易日观测基差 +8.6/+5.9bp，落后一天应为 +74bp，初步支持同日映射，样本不足；门槛①合约身份与换月：426 个交易日的日线基差显示连续代码在季月到期前 1—3 天跳升 +51—165bp（6/6 季度），已据此加入换月防护（ADR-040）；门槛②基差合理性：仍为异常筛查；门槛③新鲜度：已按 c+2 小时判定。CME 官方结算对照不可得（网站拒绝自动访问，未绕过）。证据见 reports/phase0/futures/findings.md | `core/enav.py`、`contracts/sina_hf_v2.py`、`contracts/cfets_fx_spot_v1.py`、`tests/unit/test_enav.py` |
