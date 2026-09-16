@@ -52,6 +52,7 @@ class Health:
     relative_last_bundle_id: str | None = None
     anchors_recent: list[dict[str, Any]] = field(default_factory=list)
     anchor_window: Any = None  # CloseWindow，展示下一次收盘锚点窗口
+    degraded: dict[str, str] = field(default_factory=dict)  # 已停止的辅助任务 → 原因（采集继续，但功能缺失）
 
     def absorb_parse(self, result: ParseResult) -> None:
         for issue in result.issues:
@@ -72,7 +73,7 @@ class Health:
                 }
 
     def warnings(self, now_utc_ns: int) -> list[str]:
-        out = []
+        out = [f"辅助任务 {name} 已停止：{err}（采集继续）" for name, err in sorted(self.degraded.items())]
         if self.blocklist.entries:
             out.append(f"端点已封禁：{', '.join(sorted(self.blocklist.entries))}")
         if self.anchors_recent and self.anchors_recent[-1]["anchor"]["status"] not in ("READY",):

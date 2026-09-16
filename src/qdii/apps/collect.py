@@ -47,6 +47,8 @@ log = logging.getLogger("qdii.collect")
 # 所有等待都不超过该秒数再重读墙钟：macOS 睡眠期间单调钟可能不前进，长等待会在唤醒后迟到
 MAX_WAIT_S = 15.0
 GAP_RETRY_S = 120.0  # 估算所需输入缺失时，对应端点的最短重试间隔（仍受失败退避约束，四审 D2）
+# 辅助任务（不采集数据）崩溃只降级并记录，不停止采集：2026-09-16 主机探测的一处调用崩溃使整窗口反复重启、颗粒无收
+AUXILIARY_TASKS = frozenset({"status", "host_probe", "anchor_capture"})
 
 
 @dataclass(frozen=True)
@@ -205,15 +207,22 @@ class Collector:
         return self.exit_code
 
     def _on_task_done(self, task: asyncio.Task[None]) -> None:
-        """任何后台任务意外结束都要可见；采集相关任务结束则整体退出，交给 launchd 重启。"""
+        """任何后台任务意外结束都要可见；采集任务结束才整体退出，交给 launchd 重启。
+
+        辅助任务（状态页、主机探测、锚点捕获）不采集数据，崩溃时只记录并在状态页标注，继续采集：
+        窗口本来就短，不能因为附属功能的缺陷把整个窗口的数据都丢掉（NFR04）。
+        """
         if task.cancelled() or self.stop.is_set():
             return
+        name = task.get_name()
         exc = task.exception()
-        self.events.emit("TASK_ENDED", task=task.get_name(), error=repr(exc) if exc else None)
-        log.error("task %s ended unexpectedly: %r", task.get_name(), exc)
-        if task.get_name() != "status":
-            self.exit_code = self.exit_code or 1
-            self.stop.set()
+        self.events.emit("TASK_ENDED", task=name, error=repr(exc) if exc else None)
+        log.error("task %s ended unexpectedly: %r", name, exc)
+        if name in AUXILIARY_TASKS:
+            self.health.degraded[name] = repr(exc) if exc else "ended"
+            return
+        self.exit_code = self.exit_code or 1
+        self.stop.set()
 
     # ---------- 主机可用窗口 ----------
 
@@ -465,8 +474,7 @@ class Collector:
                 self.events.emit("CLOCK_SKEW", offset_ms=offset)
             if free < self.cfg.min_disk_free_gb:
                 self.events.emit("DISK_LOW", free_gb=round(free, 1))
-            started = self.clock.monotonic_ns()
-            await self._sleep_until_next(started, self.cfg.host_probe_interval_s)
+            await self._sleep_until_next(self.clock.monotonic_ns(), now, self.cfg.host_probe_interval_s)
 
     async def _sleep(self, seconds: float) -> None:
         try:

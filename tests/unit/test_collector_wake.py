@@ -107,3 +107,58 @@ def test_without_gap_or_sleep_normal_interval_is_kept(tmp_path):
 
     seen = run_poll(tmp_path, clock, on_sleep)
     assert len(seen) == 1  # 1 小时周期内窗口（北京 15:05）先结束，不额外请求
+
+
+def test_host_probe_loop_polls_and_waits(tmp_path, monkeypatch):
+    """2026-09-16 事故：主机探测里的一处调用未随等待逻辑一起修改，整窗口反复崩溃重启。"""
+    from qdii.io import host as host_mod
+
+    clock = SleepyClock(bj(14, 0, day=16))
+    cfg = CollectorConfig(
+        data_root=tmp_path, run_label="test", heartbeat_interval_s=30, gap_threshold_s=90,
+        host_probe_interval_s=600, min_disk_free_gb=0, max_clock_offset_ms=2000, status_enabled=False,
+        status_interface="lo0", status_port=0, host_window=HOST, host_probe_enabled=True,
+    )
+    monkeypatch.setattr(host_mod, "power_source", lambda: "AC Power")
+    monkeypatch.setattr(host_mod, "ntp_offset_ms", lambda: 1.0)
+    monkeypatch.setattr(host_mod, "disk_free_gb", lambda p: 100.0)
+    monkeypatch.setattr(host_mod, "firewall_blocks_all_incoming", lambda: True)
+    collector = Collector(cfg, [], 5, clock=clock)
+    rounds = []
+
+    async def fake_sleep(seconds: float) -> None:
+        rounds.append(seconds)
+        advance(clock, seconds)
+        if len(rounds) >= 3:
+            collector.stop.set()
+        await asyncio.sleep(0)
+
+    collector._sleep = fake_sleep
+    collector.window_open.set()
+    asyncio.run(collector._host_probe())
+    assert collector.health.host is not None and collector.health.host.power_source == "AC Power"
+    assert rounds and all(s <= 15 for s in rounds)  # 分段等待，无异常
+
+
+def test_auxiliary_task_crash_does_not_stop_collection(tmp_path):
+    cfg = CollectorConfig(
+        data_root=tmp_path, run_label="test", heartbeat_interval_s=30, gap_threshold_s=90,
+        host_probe_interval_s=600, min_disk_free_gb=0, max_clock_offset_ms=2000, status_enabled=False,
+        status_interface="lo0", status_port=0, host_window=HOST, host_probe_enabled=False,
+    )
+    collector = Collector(cfg, [], 5, clock=SleepyClock(bj(14, 0, day=16)))
+
+    async def boom() -> None:
+        raise RuntimeError("probe bug")
+
+    async def main() -> None:
+        for name, stops in (("host_probe", False), ("heartbeat", True)):
+            task = asyncio.create_task(boom(), name=name)
+            task.add_done_callback(collector._on_task_done)
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+            assert collector.stop.is_set() is stops, name
+        assert "host_probe" in collector.health.degraded
+        assert any("host_probe" in w for w in collector.health.warnings(0))
+
+    asyncio.run(main())
