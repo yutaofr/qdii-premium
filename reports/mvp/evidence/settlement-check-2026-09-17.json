@@ -1,6 +1,6 @@
 {
   "nature": "SETTLEMENT_AND_ROLL_CHECK (原始日志重解析，无外部请求)",
-  "generated_utc": "2026-09-17T05:51:33+00:00",
+  "generated_utc": "2026-09-17T05:57:27+00:00",
   "target_date": "2026-09-17",
   "next_quarterly_expiry": "2026-09-18",
   "in_roll_window_today": true,
@@ -19,7 +19,11 @@
       "mid_first": "29165.375",
       "mid_last": "29072.000",
       "settle_changed_within_day": null,
-      "roll_window": true
+      "roll_window": true,
+      "c_prev": "2026-09-11",
+      "basis_if_lagged_bp": -73.6,
+      "discrimination_bp": 82.2,
+      "mapping_verdict": null
     },
     {
       "bj_date": "2026-09-16",
@@ -35,7 +39,11 @@
       "mid_first": "29043.625",
       "mid_last": "29053.125",
       "settle_changed_within_day": null,
-      "roll_window": true
+      "roll_window": true,
+      "c_prev": "2026-09-14",
+      "basis_if_lagged_bp": -59.1,
+      "discrimination_bp": 65.0,
+      "mapping_verdict": "SAME_SESSION"
     },
     {
       "bj_date": "2026-09-16",
@@ -51,7 +59,11 @@
       "mid_first": "29053.125",
       "mid_last": "29053.125",
       "settle_changed_within_day": null,
-      "roll_window": true
+      "roll_window": true,
+      "c_prev": "2026-09-14",
+      "basis_if_lagged_bp": -59.1,
+      "discrimination_bp": 65.0,
+      "mapping_verdict": null
     },
     {
       "bj_date": "2026-09-16",
@@ -67,7 +79,11 @@
       "mid_first": "29344.375",
       "mid_last": "29344.375",
       "settle_changed_within_day": null,
-      "roll_window": true
+      "roll_window": true,
+      "c_prev": "2026-09-14",
+      "basis_if_lagged_bp": 41.1,
+      "discrimination_bp": 65.7,
+      "mapping_verdict": null
     },
     {
       "bj_date": "2026-09-17",
@@ -77,13 +93,17 @@
       "index_close_c": 28945.06,
       "basis_bp": 107.7,
       "delta_basis_bp": 101.8,
-      "samples": 28,
+      "samples": 99,
       "first_bj": "13:37:50",
-      "last_bj": "13:51:29",
+      "last_bj": "13:57:25",
       "mid_first": "29407.625",
-      "mid_last": "29392.375",
+      "mid_last": "29378.000",
       "settle_changed_within_day": null,
       "roll_window": true,
+      "c_prev": "2026-09-15",
+      "basis_if_lagged_bp": 110.2,
+      "discrimination_bp": 2.5,
+      "mapping_verdict": "INDETERMINATE",
       "flag": "SETTLE_BASIS_JUMP"
     },
     {
@@ -94,13 +114,17 @@
       "index_close_c": 28945.06,
       "basis_bp": 6.4,
       "delta_basis_bp": 0.4,
-      "samples": 28,
+      "samples": 99,
       "first_bj": "13:37:43",
-      "last_bj": "13:50:54",
+      "last_bj": "13:57:17",
       "mid_first": "29110.875",
-      "mid_last": "29101.375",
+      "mid_last": "29083.625",
       "settle_changed_within_day": null,
-      "roll_window": true
+      "roll_window": true,
+      "c_prev": "2026-09-15",
+      "basis_if_lagged_bp": 8.9,
+      "discrimination_bp": 2.5,
+      "mapping_verdict": "INDETERMINATE"
     },
     {
       "bj_date": "2026-09-17",
@@ -110,13 +134,17 @@
       "index_close_c": 28945.06,
       "basis_bp": 107.7,
       "delta_basis_bp": 0.9,
-      "samples": 28,
+      "samples": 99,
       "first_bj": "13:37:50",
-      "last_bj": "13:51:29",
+      "last_bj": "13:57:25",
       "mid_first": "29407.625",
-      "mid_last": "29392.375",
+      "mid_last": "29378.000",
       "settle_changed_within_day": null,
-      "roll_window": true
+      "roll_window": true,
+      "c_prev": "2026-09-15",
+      "basis_if_lagged_bp": 110.2,
+      "discrimination_bp": 2.5,
+      "mapping_verdict": "INDETERMINATE"
     }
   ],
   "contract_identity": [
@@ -146,7 +174,7 @@
       "continuous_matches": [
         "NQ2612"
       ],
-      "samples": 28,
+      "samples": 99,
       "quarterlies": {
         "NQ2609": {
           "CALCULATED": "29119.560",

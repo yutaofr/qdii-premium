@@ -37,6 +37,7 @@ SH = ZoneInfo("Asia/Shanghai")
 KLINE_ENDPOINTS = ("sina.nq_daily_kline", "research.sina.nq_daily_kline")
 CONTINUOUS = "CONTINUOUS"  # 月份未知的连续代码 hf_NQ
 ROLL_JUMP_BP = 50.0
+MIN_DISCRIMINATION_BP = 20.0  # 两种结算日假设的基差差距低于此值时，当天判别力不足，不下结论
 HISTORY_DAYS = 30
 
 
@@ -152,6 +153,19 @@ def main(day: str) -> None:
         close = idx.get(c) if c else None
         basis = (float(o["settle"]) / close - 1) * 1e4 if close else None
         previous = prev_basis.get(contract)
+        # 同日映射 vs 落后一日：两种假设下的基差差距就是 c 前一段的指数变动，即当天的判别力。
+        # 判别力太小时不下结论（例如指数几乎没动，两种假设看起来一样）。
+        c_prev = last_us_session(c) if c else None
+        close_prev = idx.get(c_prev) if c_prev else None
+        basis_if_lagged = (float(o["settle"]) / close_prev - 1) * 1e4 if close_prev else None
+        power = abs(basis - basis_if_lagged) if basis is not None and basis_if_lagged is not None else None
+        verdict = None
+        if power is not None and previous is not None:
+            if power < MIN_DISCRIMINATION_BP:
+                verdict = "INDETERMINATE"  # 判别力不足，本日不作结论
+            else:
+                verdict = ("SAME_SESSION" if abs(basis - previous) <= abs(basis_if_lagged - previous)
+                           else "PREVIOUS_SESSION")
         row = {"bj_date": d.isoformat(), "contract": contract, "c": c.isoformat() if c else None,
                "settle": o["settle"], "index_close_c": close,
                "basis_bp": None if basis is None else round(basis, 1),
@@ -159,7 +173,11 @@ def main(day: str) -> None:
                "samples": o["samples"], "first_bj": o["first_bj"], "last_bj": o["last_bj"],
                "mid_first": o["mid_first"], "mid_last": o["mid_last"],
                "settle_changed_within_day": o.get("settle_changed_within_day"),
-               "roll_window": in_roll_window(c) if c else None}
+               "roll_window": in_roll_window(c) if c else None,
+               "c_prev": c_prev.isoformat() if c_prev else None,
+               "basis_if_lagged_bp": None if basis_if_lagged is None else round(basis_if_lagged, 1),
+               "discrimination_bp": None if power is None else round(power, 1),
+               "mapping_verdict": verdict}
         if row["delta_basis_bp"] is not None and abs(row["delta_basis_bp"]) > ROLL_JUMP_BP:
             row["flag"] = "SETTLE_BASIS_JUMP"  # 换月或结算日映射异常（仅研究标记，生产不消费）
         settle_rows.append(row)
@@ -214,8 +232,14 @@ def main(day: str) -> None:
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"下一个季月到期 {next_expiry}，今日换月窗口内：{out['in_roll_window_today']}")
     for r in settle_rows:
-        print(f"  {r['bj_date']} {r['contract']:<10} c={r['c']} 昨结算 {r['settle']} 指数 {r['index_close_c']} "
-              f"基差 {r['basis_bp']}bp Δ {r['delta_basis_bp']} {r.get('flag') or ''}")
+        verdict = {"SAME_SESSION": "同日映射", "PREVIOUS_SESSION": "落后一日", "INDETERMINATE": "判别力不足"}.get(
+            r["mapping_verdict"], "首个样本")
+        print(f"  {r['bj_date']} {r['contract']:<10} c={r['c']} 昨结算 {r['settle']} 基差 {r['basis_bp']}bp "
+              f"Δ {r['delta_basis_bp']} | 落后假设 {r['basis_if_lagged_bp']}bp 判别力 {r['discrimination_bp']}bp "
+              f"→ {verdict} {r.get('flag') or ''}")
+    verdicts = [r["mapping_verdict"] for r in settle_rows if r["contract"] not in (CONTINUOUS,)]
+    print(f"月份合约映射判定累计：同日 {verdicts.count('SAME_SESSION')}、落后一日 "
+          f"{verdicts.count('PREVIOUS_SESSION')}、判别力不足 {verdicts.count('INDETERMINATE')}")
     for r in out["contract_identity"]:
         print(f"  身份比对 {r['bj_date']}：连续代码 = {r['continuous_matches']}（{r['samples']} 条样本）")
     k = out["kline_basis_changes"]
