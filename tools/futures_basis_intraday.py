@@ -1,18 +1,12 @@
-"""期货段误差的实测：基差漂移 b(τ) = F(τ)/I(τ) − 1 的时间行为（勘误 E8 遗留项）。
+"""探索性研究：Yahoo 美股现金时段与跨会话端点的基差变化（勘误 E8 遗留项，2026-09-18 复审后降级）。
 
-为什么需要它：E-NAV 用 F(t)/F(c) 代替"从昨晚美股收盘到此刻，持仓价值变了多少"。被代替的量在亚洲时段
-**本身不可观测**（指数不交易），两者之差就是基差漂移 b(t) − b(c)。b(c) 每天精确已知（结算 vs 指数收盘），
-缺的是区间内的 b(t)。
-
-可测的两件事（都用同刻配对的 5 分钟数据）：
-
-1. **隔夜漂移** b(次日开盘) − b(前日收盘)：两个端点都有指数值，而我们的估算时刻 t 落在这段区间**之内**，
-   因此它是包住 t 的区间漂移，可直接统计分布。
-2. **盘中同长度区间的漂移**：美股时段内 b(τ+h) − b(τ)，h 取 1—6 小时，用于看漂移随时间的增长方式
-   （是否接近扩散），从而判断"把隔夜漂移按时间比例缩放到 t"是否有依据。
+本工具**不测量**亚洲决策时点的期货代理误差。E-NAV 用 F(t)/S(c) 代替"从昨晚美股收盘到此刻持仓价值的变化"；
+亚洲时段官方指数停在昨收，没有独立的经济公允价值参照，误差保持未识别（UNIDENTIFIED）。
+美股时段的端点只说明端点本身，不约束区间内部，不是亚洲时点误差的包络或界限；研究所用的五分钟线收盘
+也不是正式指数收盘或结算锚点（reports/phase0/futures/findings.md 第 9 节）。
 
 数据：Yahoo chart 接口（NQZ26.CME 与 ^NDX，5 分钟）。只读、无凭据、每日 2 次请求；抓取写入研究原始日志后再重解析。
-口径说明：与生产使用的新浪源是**不同供应商**，5 分钟粒度；亚洲时段基差不可观测，故隔夜漂移是**包络**，不是 t 时刻的误差。
+与生产使用的新浪源是不同供应商。
 
 用法：uv run python tools/futures_basis_intraday.py [合约代码]
 输出：reports/mvp/evidence/futures-basis-<date>.json
@@ -78,7 +72,7 @@ def main(contract: str) -> None:
         print("配对样本过少，无法统计")
         return
 
-    # 每个美股交易日的收盘与开盘基差 → 隔夜漂移（包住我们的估算时刻）
+    # 每个美股交易日的收盘与开盘基差 → 跨会话端点变化（只说明端点，不约束区间内部）
     by_day: dict[str, list[int]] = {}
     for t in paired:
         by_day.setdefault(datetime.fromtimestamp(t, NY).date().isoformat(), []).append(t)
@@ -92,7 +86,7 @@ def main(contract: str) -> None:
                           "open_basis_bp": round(basis[open_t], 1), "drift_bp": round(drift, 1),
                           "hours": round(hours, 1)})
 
-    # 盘中同长度区间漂移：衡量漂移随时间的增长
+    # 盘中同长度区间（重叠窗口，v1 口径；v2 改为不重叠窗口）
     horizon_stats = {}
     for h in HORIZONS_H:
         diffs = []
@@ -108,10 +102,10 @@ def main(contract: str) -> None:
 
     drifts = sorted(abs(o["drift_bp"]) for o in overnight)
     out = {
-        "nature": "FUTURES_LEG_BASIS_DRIFT (Yahoo 5 分钟配对；与生产源不同供应商)",
+        "nature": "EXPLORATORY_US_CASH_SESSION_BASIS_CHANGE (Yahoo 5 分钟配对；与生产源不同供应商)",
         "generated_utc": datetime.now(UTC).isoformat(timespec="seconds"), "contract": contract,
         "paired_points": len(paired), "sessions": len(days), "from": days[0], "to": days[-1],
-        "caveat": "亚洲时段基差不可观测；隔夜漂移是包住估算时刻 t 的区间漂移，不是 t 时刻误差本身",
+        "caveat": "美股时段端点样本，不约束区间内部，不是亚洲决策时点误差的包络或界限；亚洲时点误差未识别",
         "overnight_drift": overnight,
         "overnight_abs_drift_bp": {"n": len(drifts),
                                    "median": round(statistics.median(drifts), 1) if drifts else None,
