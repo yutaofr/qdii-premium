@@ -1,0 +1,213 @@
+{
+  "nature": "FUTURES_LEG_BASIS_DRIFT (Yahoo 5 分钟配对；与生产源不同供应商)",
+  "generated_utc": "2026-09-18T06:25:42+00:00",
+  "contract": "NQZ26",
+  "paired_points": 1647,
+  "sessions": 22,
+  "from": "2026-08-18",
+  "to": "2026-09-17",
+  "caveat": "亚洲时段基差不可观测；隔夜漂移是包住估算时刻 t 的区间漂移，不是 t 时刻误差本身",
+  "overnight_drift": [
+    {
+      "from": "2026-08-18",
+      "to": "2026-08-19",
+      "close_basis_bp": 132.8,
+      "open_basis_bp": 127.9,
+      "drift_bp": -4.9,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-08-19",
+      "to": "2026-08-20",
+      "close_basis_bp": 133.7,
+      "open_basis_bp": 133.4,
+      "drift_bp": -0.2,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-08-20",
+      "to": "2026-08-21",
+      "close_basis_bp": 129.4,
+      "open_basis_bp": 125.5,
+      "drift_bp": -3.9,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-08-21",
+      "to": "2026-08-24",
+      "close_basis_bp": 122.4,
+      "open_basis_bp": 126.2,
+      "drift_bp": 3.8,
+      "hours": 65.6
+    },
+    {
+      "from": "2026-08-24",
+      "to": "2026-08-25",
+      "close_basis_bp": 123.9,
+      "open_basis_bp": 123.3,
+      "drift_bp": -0.6,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-08-25",
+      "to": "2026-08-26",
+      "close_basis_bp": 126.0,
+      "open_basis_bp": 124.8,
+      "drift_bp": -1.2,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-08-26",
+      "to": "2026-08-27",
+      "close_basis_bp": 122.7,
+      "open_basis_bp": 126.1,
+      "drift_bp": 3.5,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-08-27",
+      "to": "2026-08-28",
+      "close_basis_bp": 116.9,
+      "open_basis_bp": 117.8,
+      "drift_bp": 1.0,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-08-28",
+      "to": "2026-08-31",
+      "close_basis_bp": 122.2,
+      "open_basis_bp": 116.7,
+      "drift_bp": -5.4,
+      "hours": 65.6
+    },
+    {
+      "from": "2026-08-31",
+      "to": "2026-09-01",
+      "close_basis_bp": 117.9,
+      "open_basis_bp": 116.2,
+      "drift_bp": -1.7,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-01",
+      "to": "2026-09-02",
+      "close_basis_bp": 115.8,
+      "open_basis_bp": 114.5,
+      "drift_bp": -1.3,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-02",
+      "to": "2026-09-03",
+      "close_basis_bp": 113.7,
+      "open_basis_bp": 116.9,
+      "drift_bp": 3.2,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-03",
+      "to": "2026-09-04",
+      "close_basis_bp": 115.8,
+      "open_basis_bp": 112.5,
+      "drift_bp": -3.4,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-04",
+      "to": "2026-09-08",
+      "close_basis_bp": 107.9,
+      "open_basis_bp": 107.8,
+      "drift_bp": -0.1,
+      "hours": 89.6
+    },
+    {
+      "from": "2026-09-08",
+      "to": "2026-09-09",
+      "close_basis_bp": 110.5,
+      "open_basis_bp": 108.1,
+      "drift_bp": -2.4,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-09",
+      "to": "2026-09-10",
+      "close_basis_bp": 109.2,
+      "open_basis_bp": 106.4,
+      "drift_bp": -2.8,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-10",
+      "to": "2026-09-11",
+      "close_basis_bp": 109.3,
+      "open_basis_bp": 105.9,
+      "drift_bp": -3.4,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-11",
+      "to": "2026-09-14",
+      "close_basis_bp": 108.1,
+      "open_basis_bp": 106.0,
+      "drift_bp": -2.2,
+      "hours": 65.6
+    },
+    {
+      "from": "2026-09-14",
+      "to": "2026-09-15",
+      "close_basis_bp": 109.2,
+      "open_basis_bp": 104.3,
+      "drift_bp": -4.8,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-15",
+      "to": "2026-09-16",
+      "close_basis_bp": 108.4,
+      "open_basis_bp": 105.1,
+      "drift_bp": -3.3,
+      "hours": 17.6
+    },
+    {
+      "from": "2026-09-16",
+      "to": "2026-09-17",
+      "close_basis_bp": 104.0,
+      "open_basis_bp": 101.8,
+      "drift_bp": -2.3,
+      "hours": 17.6
+    }
+  ],
+  "overnight_abs_drift_bp": {
+    "n": 21,
+    "median": 2.8,
+    "p95": 4.9,
+    "max": 5.4
+  },
+  "intraday_abs_drift_bp_by_horizon": {
+    "1h": {
+      "n": 1339,
+      "median": 1.4,
+      "p95": 5.8,
+      "max": 16.4
+    },
+    "2h": {
+      "n": 1088,
+      "median": 1.4,
+      "p95": 5.9,
+      "max": 14.5
+    },
+    "3h": {
+      "n": 849,
+      "median": 1.6,
+      "p95": 5.8,
+      "max": 15.3
+    },
+    "6h": {
+      "n": 128,
+      "median": 1.9,
+      "p95": 6.5,
+      "max": 10.1
+    }
+  },
+  "last_close_basis_bp": 98.6
+}
