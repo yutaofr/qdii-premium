@@ -490,6 +490,37 @@ def test_bootstrap_is_withheld_below_thirty_sessions():
     assert ci["h"] == {"status": "INSUFFICIENT_SESSIONS", "sessions": 29, "ci": None}
 
 
+def test_bootstrap_counts_nonempty_sessions_for_each_horizon():
+    ci = block_bootstrap_ci({"1h": [[1.0]] * 30, "6h": [[7.0]] + [[]] * 29, "empty": [[]] * 30},
+                            lambda xs: sum(xs) / len(xs), reps=200, seed=7)
+    assert ci["1h"]["status"] == "OK" and ci["1h"]["sessions"] == 30
+    assert ci["6h"] == {"status": "INSUFFICIENT_SESSIONS", "sessions": 1, "ci": None}
+    assert ci["empty"] == {"status": "INSUFFICIENT_SESSIONS", "sessions": 0, "ci": None}
+
+
+def test_bootstrap_does_not_silently_discard_empty_resamples():
+    # Lowered threshold exercises the rare empty draw without claiming two days suffice statistically.
+    ci = block_bootstrap_ci({"sparse": [[1.0], [2.0]] + [[]] * 28}, lambda xs: sum(xs) / len(xs),
+                            reps=200, seed=7, min_sessions=2)["sparse"]
+    assert ci["status"] == "INCOMPLETE_RESAMPLES" and ci["ci"] is None
+    assert ci["sessions"] == 2 and ci["reps_used"] < ci["reps"]
+
+
+def test_sparse_horizon_and_same_start_comparison_do_not_borrow_other_days():
+    # Synthetic dates supplied directly as sessions; no exchange-calendar assumption.
+    days = [(date(2026, 3, 2) + timedelta(days=k)).isoformat() for k in range(42)
+            if (date(2026, 3, 2) + timedelta(days=k)).weekday() < 5]
+    f, i = synthetic([(d, "16:00") for d in days], drop=tuple((FUT, d, "14:00") for d in days[1:]))
+    a = analyze(f, i, tuple(session(d) for d in days), as_of_s=FAR_FUTURE, bootstrap_reps=20)
+    assert a["intraday"]["by_horizon"]["6h"]["sessions"] == 1
+    for metric in ("abs_p95", "signed_mean"):
+        assert a["intraday"]["bootstrap"][metric]["6h"] == {
+            "status": "INSUFFICIENT_SESSIONS", "sessions": 1, "ci": None}
+        common = a["intraday"]["same_start_comparison"]["bootstrap"][metric]
+        assert all(v == {"status": "INSUFFICIENT_SESSIONS", "sessions": 1, "ci": None}
+                   for v in common.values())
+
+
 def test_acf_within_sessions_is_null_for_constant_or_short_input():
     const = within_session_acf([[3.0] * 10, [3.0] * 10], lags=(1,))
     assert const[0]["acf"] is None and const[0]["pairs"] == 18 and const[0]["sessions"] == 2

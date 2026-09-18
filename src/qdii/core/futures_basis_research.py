@@ -370,7 +370,7 @@ def pair_sessions(fut: Sequence[PriceRecord], idx: Sequence[PriceRecord], sessio
 
 # ---------- 统计：只回答可观测问题 ----------
 
-METRIC_VERSION = "futures-basis-research-2"
+METRIC_VERSION = "futures-basis-research-3"
 ASIA_STATUS = "UNIDENTIFIED"
 ANALYSIS_UNKNOWNS = ("asia_decision_error_status", "asia_decision_error_bound_bp", "decision_grade")
 QUANTILE_METHOD = "NEAREST_RANK: 升序排列后取第 ceil(p·n) 个（下标 ceil(p·n)−1）；样本分位，不是总体分位的精确估计或上界"
@@ -506,25 +506,31 @@ def block_bootstrap_ci(by_key: Mapping[str, Sequence[Sequence[float]]],
                        stat: Callable[[list[float]], float | None], *, reps: int = 2000,
                        seed: int = DEFAULT_SEED, min_sessions: int = MIN_BOOTSTRAP_SESSIONS, level: float = 0.95) -> dict:
     """各键的会话列表须按同一会话顺序对齐，所有键共用同一批抽样（期限比较共享重采样日期）。
-    会话数不足 min_sessions 时不给区间（INSUFFICIENT_SESSIONS）。"""
+    门槛按每个键的非空会话数判断；对齐占位不算观测。期限之间的比较应另外传入共同有效会话。"""
     counts = {len(v) for v in by_key.values()}
     if len(counts) > 1:
         raise ValueError("session lists must be aligned across keys")
     n = counts.pop() if counts else 0
-    if n < min_sessions:
-        return {k: {"status": "INSUFFICIENT_SESSIONS", "sessions": n, "ci": None} for k in by_key}
-    draws = resample_session_indices(n, reps=reps, seed=seed)
+    effective = {k: sum(bool(day) for day in days) for k, days in by_key.items()}
+    draws = (resample_session_indices(n, reps=reps, seed=seed)
+             if any(count >= min_sessions and count > 0 for count in effective.values()) else [])
     out = {}
     for key, sessions in by_key.items():
+        if effective[key] < min_sessions or not effective[key]:
+            out[key] = {"status": "INSUFFICIENT_SESSIONS", "sessions": effective[key], "ci": None}
+            continue
         stats = []
         for draw in draws:
             xs = [x for i in draw for x in sessions[i]]
             if xs:
                 stats.append(stat(xs))
         tail = (1 - level) / 2
-        out[key] = {"status": "OK", "sessions": n, "method": "DAY_BLOCK_PERCENTILE", "reps": reps,
+        complete = bool(stats) and len(stats) == reps and all(v is not None for v in stats)
+        out[key] = {"status": "OK" if complete else "INCOMPLETE_RESAMPLES", "sessions": effective[key],
+                    "method": "DAY_BLOCK_PERCENTILE", "reps": reps,
                     "reps_used": len(stats), "seed": seed, "level": level,
-                    "ci": [nearest_rank(stats, tail)["value"], nearest_rank(stats, 1 - tail)["value"]]}
+                    "ci": ([nearest_rank(stats, tail)["value"], nearest_rank(stats, 1 - tail)["value"]]
+                           if complete else None)}
     return out
 
 
@@ -630,8 +636,17 @@ def analyze(fut_raw: RawSeries, idx_raw: RawSeries, sessions: Sequence[CashSessi
         "abs_p95": block_bootstrap_ci(aligned, lambda xs: nearest_rank([abs(x) for x in xs], 0.95)["value"],
                                       **boot_kw),
         "signed_mean": block_bootstrap_ci(aligned, lambda xs: sum(xs) / len(xs), **boot_kw),
-        "note": ("会话数低于门槛时不给区间；门槛只是软件展示条件，不代表统计充分。"
+        "note": ("每个期限按自身非空会话数检查门槛，空占位不算样本；空抽样不静默丢弃，区间降级。"
+                 "期限比较另用共同起点/共同有效会话。门槛只是软件展示条件，不代表统计充分。"
                  "区间即使给出，也只描述样本内重采样波动，不是亚洲时点误差界限"),
+    }
+
+    common = same_start_comparison(fut, idx, sessions, hours=horizons, as_of_s=as_of_s)
+    common_days = {h: [[v] for v in values] for h, values in common["values_bp"].items()}
+    common["bootstrap"] = {
+        "abs_p95": block_bootstrap_ci(common_days,
+                                      lambda xs: nearest_rank([abs(x) for x in xs], 0.95)["value"], **boot_kw),
+        "signed_mean": block_bootstrap_ci(common_days, lambda xs: sum(xs) / len(xs), **boot_kw),
     }
 
     fb, ib = _bars_by_end(fut), _bars_by_end(idx)
@@ -668,7 +683,7 @@ def analyze(fut_raw: RawSeries, idx_raw: RawSeries, sessions: Sequence[CashSessi
         "intraday": {
             "window_rule": "每个会话从首根线收盘起按期限切成不重叠窗口，相邻窗口共享边界点；任一内部线缺失即排除，不前向填充",
             "by_horizon": by_h,
-            "same_start_comparison": same_start_comparison(fut, idx, sessions, hours=horizons, as_of_s=as_of_s),
+            "same_start_comparison": common,
             "bootstrap": bootstrap,
         },
         "acf": {"note": "会话内、去日均值的基差水平；相关性不自动解释为均值回复",

@@ -60,7 +60,7 @@ DATA = Path.home() / "qdii-data"
 NY = ZoneInfo("America/New_York")
 UA = "qdii-premium-research/0.1 (personal research)"
 MARKET = "NASDAQ"  # 覆盖文件映射到 XNYS，与生产取美股交易日同一入口
-SCHEMA_VERSION = "futures-basis-evidence-2"
+SCHEMA_VERSION = "futures-basis-evidence-3"
 PAUSE_S = 1.0
 
 
@@ -166,17 +166,46 @@ async def fetch(contract: str, research_root: Path) -> tuple[str, list[Path]]:
                 await asyncio.sleep(PAUSE_S)
     finally:
         writer.close()
-    return run_id, paths
+    # 同一 writer 的下一小时 append 会压缩并删除前一小时的 .jsonl；关闭后再解析实际段路径。
+    resolved = []
+    for path in paths:
+        actual = path if path.is_file() else path.with_suffix(".jsonl.gz")
+        if not actual.is_file():
+            raise SelectionError("RAW_SEGMENT_MISSING", str(path))
+        resolved.append(actual)
+    return run_id, resolved
 
 
-def load_official_closes(root: Path, first: date, last: date) -> tuple[dict[date, OfficialClose], list[dict]]:
-    """从生产原始日志离线读取 Nasdaq 官方 NDX 收盘（index_history_v1）。同一日期出现不同数值时排除该日。"""
+def load_official_closes(root: Path, first: date, last: date, *,
+                         evidence: dict | None = None) -> tuple[dict[date, OfficialClose], list[dict]]:
+    """验证官方参照原始响应；冲突日期排除，损坏报文拒绝。evidence 收集可追溯来源与排除原因。"""
     values: dict[date, dict[str, str]] = {}
-    for m in rawlog.iter_messages(root, sources=["nasdaq"]):
-        if m.status != 200:
-            continue
-        for rec in index_history_v1.parse_nasdaq(m).records:
-            if rec.close is not None and first <= rec.trade_date <= last:
+    responses, excluded = {}, []
+    for path in rawlog.segments(root, sources=["nasdaq"]):
+        for m in read_raw([path]):
+            origin = {"msg_id": m.msg_id, "raw_file": _home(path)}
+            if m.source_id != "nasdaq" or m.endpoint_id != "nasdaq.ndx_history":
+                excluded.append({**origin, "reason": "UNEXPECTED_SOURCE"})
+                continue
+            if m.status != 200 or m.error:
+                excluded.append({**origin, "reason": "HTTP_ERROR", "status": m.status, "error": m.error})
+                continue
+            if hashlib.sha256(m.body).hexdigest() != m.body_sha256:
+                raise SelectionError("HASH_MISMATCH", f"official close {m.msg_id} in {path}")
+            parsed = index_history_v1.parse_nasdaq(m)
+            if parsed.issues:
+                excluded.append({**origin, "reason": "PARSE_ISSUES"})
+            selected = [rec for rec in parsed.records if rec.close is not None and first <= rec.trade_date <= last]
+            if not selected:
+                continue
+            responses[m.msg_id] = {
+                **origin, "source_id": m.source_id, "endpoint_id": m.endpoint_id,
+                "body_sha256": m.body_sha256, "body_sha256_verified": True,
+                "received_utc_ns": m.received_utc_ns,
+                "received_at_utc": datetime.fromtimestamp(m.received_utc_ns / 1e9, UTC).isoformat(),
+                "contract_version": index_history_v1.NASDAQ_VERSION,
+            }
+            for rec in selected:
                 values.setdefault(rec.trade_date, {}).setdefault(str(rec.close), m.msg_id)
     official, conflicts = {}, []
     for d, vs in sorted(values.items()):
@@ -185,6 +214,9 @@ def load_official_closes(root: Path, first: date, last: date) -> tuple[dict[date
             official[d] = OfficialClose(d, value, ref)
         else:
             conflicts.append({"date": d.isoformat(), "values": sorted(vs)})
+    if evidence is not None:
+        evidence.update(responses=sorted(responses.values(), key=lambda r: (r["received_utc_ns"], r["msg_id"])),
+                        excluded_responses=excluded)
     return official, conflicts
 
 
@@ -287,6 +319,10 @@ def build_document(contract: str, mode: str, run_id: str, paths: Sequence[Path],
     fm, im = msgs[ep_fut], msgs[ep_idx]
     fut_raw = parse_chart(fm.body, source_ref=fm.msg_id, received_s=fm.received_utc_ns / 1e9)
     idx_raw = parse_chart(im.body, source_ref=im.msg_id, received_s=im.received_utc_ns / 1e9)
+    for raw, expected in ((fut_raw, f"{contract}.CME"), (idx_raw, "^NDX")):
+        if raw.instrument != expected:
+            raise SelectionError("INSTRUMENT_MISMATCH",
+                                 f"{raw.source_ref}: expected {expected}, received {raw.instrument!r}")
     as_of = min(fut_raw.received_s, idx_raw.received_s)
     sessions: tuple[CashSession, ...] | None = ()
     first = last = None
@@ -295,8 +331,10 @@ def build_document(contract: str, mode: str, run_id: str, paths: Sequence[Path],
         last = datetime.fromtimestamp(as_of, NY).date()
         sessions = expected_sessions(cal, first, last)
     official, conflicts = ({}, [])
+    official_evidence: dict = {"responses": [], "excluded_responses": []}
     if official_root is not None and first is not None:
-        official, conflicts = load_official_closes(official_root, first, last)  # type: ignore[arg-type]
+        official, conflicts = load_official_closes(official_root, first, last,  # type: ignore[arg-type]
+                                                   evidence=official_evidence)
     analysis = analyze(fut_raw, idx_raw, sessions, as_of_s=as_of, official=official)
     idx_recs, _ = verify_official_closes(classify(idx_raw, sessions, cash_index=True), sessions, official)
     comparison = None
@@ -324,7 +362,7 @@ def build_document(contract: str, mode: str, run_id: str, paths: Sequence[Path],
                 "root": _home(official_root), "source": "Nasdaq 官方 NDX 历史（生产原始日志，index_history_v1）",
                 "records": [{"date": d.isoformat(), "value": o.value, "ref": o.source_ref}
                             for d, o in sorted(official.items())],
-                "conflicts": conflicts},
+                "conflicts": conflicts, **official_evidence},
         },
         "analysis": analysis,
         "legacy_comparison": comparison,

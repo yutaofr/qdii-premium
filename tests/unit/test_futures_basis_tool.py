@@ -10,7 +10,7 @@ import gzip
 import importlib.util
 import json
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -269,3 +269,97 @@ def test_network_mode_closes_the_writer_when_a_fetch_fails(tmp_path, monkeypatch
     with pytest.raises(RuntimeError):
         asyncio.run(mod.fetch("NQZ26", tmp_path))
     assert closed == [True]
+
+
+def test_official_hash_failure_cannot_verify_a_close(tool, tmp_path, capsys):
+    payload = {"data": {"symbol": "NDX", "tradesTable": {"rows": [
+        {"date": "09/17/2026", "close": "29,446.98"}]}}}
+    m = make_msg(json.dumps(payload).encode(), source_id="nasdaq", endpoint_id="nasdaq.ndx_history")
+    seg = tmp_path / "official/raw/nasdaq/2026-09-18"
+    seg.mkdir(parents=True)
+    raw_file(seg, [replace(m, body_sha256="0" * 64)])
+    out = tmp_path / "bad-official.json"
+    assert cli(tool, raw_file(tmp_path, default_msgs()), out,
+               "--official-close-root", str(tmp_path / "official")) == 1
+    assert "HASH_MISMATCH" in capsys.readouterr().err and not out.exists()
+
+
+def test_official_evidence_exports_verified_source_provenance(tool, tmp_path):
+    payload = {"data": {"symbol": "NDX", "tradesTable": {"rows": [
+        {"date": "09/17/2026", "close": "29,446.98"}]}}}
+    m = make_msg(json.dumps(payload).encode(), source_id="nasdaq", endpoint_id="nasdaq.ndx_history")
+    seg = tmp_path / "official/raw/nasdaq/2026-09-18"
+    seg.mkdir(parents=True)
+    path = raw_file(seg, [m])
+    gz = rawlog.compress_segment(path)
+    out = tmp_path / "official.json"
+    assert cli(tool, raw_file(tmp_path, default_msgs()), out,
+               "--official-close-root", str(tmp_path / "official")) == 0
+    sources = json.loads(out.read_text())["inputs"]["official_closes"]["responses"]
+    assert len(sources) == 1
+    source = sources[0]
+    assert source["msg_id"] == m.msg_id and source["raw_file"] == str(gz)
+    assert source["body_sha256"] == m.body_sha256 and source["body_sha256_verified"] is True
+    assert source["received_utc_ns"] == m.received_utc_ns and source["received_at_utc"]
+    assert source["contract_version"] == "nasdaq_index_historical_v1"
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    ({"source_id": "other"}, "UNEXPECTED_SOURCE"),
+    ({"endpoint_id": "nasdaq.other"}, "UNEXPECTED_SOURCE"),
+    ({"status": 503}, "HTTP_ERROR"),
+    ({"error": "upstream failure"}, "HTTP_ERROR"),
+])
+def test_invalid_official_source_is_excluded_with_reason(tool, tmp_path, change, reason):
+    payload = {"data": {"symbol": "NDX", "tradesTable": {"rows": [
+        {"date": "09/17/2026", "close": "29,446.98"}]}}}
+    m = make_msg(json.dumps(payload).encode(), source_id="nasdaq", endpoint_id="nasdaq.ndx_history")
+    seg = tmp_path / "official/raw/nasdaq/2026-09-18"
+    seg.mkdir(parents=True)
+    raw_file(seg, [replace(m, **change)])
+    out = tmp_path / "excluded.json"
+    assert cli(tool, raw_file(tmp_path, default_msgs()), out,
+               "--official-close-root", str(tmp_path / "official")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["inputs"]["official_closes"]["responses"] == []
+    assert doc["inputs"]["official_closes"]["excluded_responses"][0]["reason"] == reason
+    checks = doc["analysis"]["official_close_diagnostic"]["verification"]
+    assert all(v["status"] != "VERIFIED" for v in checks)
+
+
+@pytest.mark.parametrize(("index", "symbol"), [(0, "NQU26.CME"), (0, "NQ=F"), (0, ""),
+                                               (0, None), (1, "^GSPC"), (1, "")])
+def test_response_identity_must_match_request(tool, tmp_path, capsys, index, symbol):
+    ms = default_msgs()
+    s = series("NQZ26.CME" if index == 0 else "^NDX")
+    s = {**s, "meta": {**s["meta"], "symbol": symbol}}
+    ms[index] = msg(ms[index].endpoint_id, body(s), seq=index, received=ms[index].received_utc_ns)
+    out = tmp_path / "wrong-symbol.json"
+    assert cli(tool, raw_file(tmp_path, ms), out) == 1
+    assert "INSTRUMENT_MISMATCH" in capsys.readouterr().err and not out.exists()
+
+
+@pytest.mark.parametrize("start", ["2026-09-18T06:59:59+00:00", "2026-09-18T23:59:59+00:00"])
+def test_network_reparse_survives_hour_and_date_rotation(tmp_path, monkeypatch, start):
+    mod = load_tool()
+    ms = default_msgs()
+    t = int(datetime.fromisoformat(start).timestamp() * 1e9)
+    canned = {EP_FUT: replace(ms[0], received_utc_ns=t), EP_IDX: replace(ms[1], received_utc_ns=t + 2 * 10**9)}
+
+    class FakeFetcher:
+        def __init__(self, client, clock, run_id):
+            self.run_id = run_id
+
+        async def fetch(self, req, seq):
+            return replace(canned[req.endpoint_id], run_id=self.run_id)
+
+    monkeypatch.setattr(mod, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(mod, "PAUSE_S", 0.0)
+    out = tmp_path / "rotated.json"
+    assert mod.run(["NQZ26", "--research-root", str(tmp_path / "research"), "--output", str(out)]) == 0
+    doc = json.loads(out.read_text())
+    paths = [Path(p) for p in doc["inputs"]["raw_files"]]
+    assert len(paths) == 2 and all(p.is_file() for p in paths)
+    assert paths[0].suffix == ".gz" and paths[1].suffix == ".jsonl"
+    assert all(m["body_sha256_verified"] for m in doc["inputs"]["responses"])
+    assert doc["analysis"]["cross_session"]["n"] == 1

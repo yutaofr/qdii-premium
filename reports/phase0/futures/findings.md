@@ -195,6 +195,8 @@ CME 对纳指期货主力合约列出 14:59:30—15:00 CT 的成交 VWAP 及无�
 
 ### 9.3 离线重算（v2）
 
+**后续 v3 修复：** [v3 证据](../../mvp/evidence/futures-basis-2026-09-18-v3.json) 修正 bootstrap 有效天数与官方参照完整性，并增加请求/响应身份核对和跨整点读取恢复。下列主统计与 v2 相同；各期限实际有效天数为 22/21/16/9，共同起点为 9 天，区间仍全部不给出。v2 保留为历史文件；当前工具与验收以[v3 修复回应](../../mvp/review-2026-09-18-futures-basis-p2-response.md)为准。
+
 证据：[futures-basis-2026-09-18-v2.json](../../mvp/evidence/futures-basis-2026-09-18-v2.json)。
 来源为原始日志 `~/qdii-data/research/raw/yahoo/2026-09-18/06.jsonl` 中 run_id `RESEARCH-20260918T062540Z` 的两条响应，
 body SHA-256 校验通过（NQZ26 `eb79725d…`、NDX `0b077f73…`），离线重算，不发请求。日历为 exchange_calendars 4.13.2 加覆盖文件
