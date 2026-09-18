@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
-import statistics
 import sys
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -29,10 +28,7 @@ import pandas as pd
 
 from qdii.core.futures_basis_research import (
     CashSession,
-    PriceKind,
-    Quality,
-    classify,
-    pair_sessions,
+    analyze,
     parse_chart,
 )
 from qdii.core.types import RawMessage
@@ -45,7 +41,6 @@ REPO = Path(__file__).resolve().parents[1]
 DATA = Path.home() / "qdii-data"
 NY = ZoneInfo("America/New_York")
 UA = "qdii-premium-research/0.1 (personal research)"
-HORIZONS_H = (1, 2, 3, 6)
 MARKET = "NASDAQ"  # 覆盖文件映射到 XNYS，与生产取美股交易日同一入口
 
 
@@ -103,76 +98,31 @@ async def fetch(contract: str) -> dict[str, RawMessage]:
     return msgs
 
 
-def main(contract: str) -> None:
-    msgs = asyncio.run(fetch(contract))
-    fut_msg, idx_msg = msgs[f"yahoo.chart.{contract}"], msgs["yahoo.chart.NDX"]
+def analysis_from_messages(fut_msg: RawMessage, idx_msg: RawMessage, cal: CalendarProvider,
+                           official: dict | None = None) -> dict:
+    """两条原始响应 → 确定性分析。日历调度在此（I/O 层），统计全部在 core 纯函数里。"""
     fut_raw = parse_chart(fut_msg.body, source_ref=fut_msg.msg_id, received_s=fut_msg.received_utc_ns / 1e9)
     idx_raw = parse_chart(idx_msg.body, source_ref=idx_msg.msg_id, received_s=idx_msg.received_utc_ns / 1e9)
     as_of = min(fut_raw.received_s, idx_raw.received_s)
-    if not idx_raw.timestamps:
-        print("指数序列为空，无法统计")
-        return
-    first = min(datetime.fromtimestamp(t, NY).date() for t in idx_raw.timestamps)
-    sessions = expected_sessions(CalendarProvider(REPO / "config" / "calendar_overrides.toml"), first,
-                                 datetime.fromtimestamp(as_of, NY).date())
-    fut_recs = classify(fut_raw, sessions, cash_index=False)
-    idx_recs = classify(idx_raw, sessions, cash_index=True)
-    cross = pair_sessions(fut_recs, idx_recs, sessions, as_of_s=as_of)
-    overnight = [{"from": x.from_date.isoformat(), "to": x.to_date.isoformat(), "gap": x.gap.value,
-                  "close_basis_bp": x.start.basis * 1e4, "open_basis_bp": x.end.basis * 1e4,
-                  "drift_bp": x.basis_drift * 1e4, "hours": x.elapsed_hours} for x in cross.samples]
-    # 盘中重叠窗口仍按 v1 口径，只用完整普通线（下一步改为不重叠窗口）
-    fut = {r.interval_start: r.close for r in fut_recs if r.kind is PriceKind.BAR_5M and r.quality is Quality.OK}
-    idx = {r.interval_start: r.close for r in idx_recs if r.kind is PriceKind.BAR_5M and r.quality is Quality.OK}
-    paired = sorted(set(fut) & set(idx))
-    basis = {t: (fut[t] / idx[t] - 1) * 1e4 for t in paired}
-    by_day: dict[str, list[int]] = {}
-    for t in paired:
-        by_day.setdefault(datetime.fromtimestamp(t, NY).date().isoformat(), []).append(t)
-    days = sorted(by_day)
+    sessions = None
+    if idx_raw.timestamps:
+        first = min(datetime.fromtimestamp(t, NY).date() for t in idx_raw.timestamps)
+        sessions = expected_sessions(cal, first, datetime.fromtimestamp(as_of, NY).date())
+    return analyze(fut_raw, idx_raw, sessions if idx_raw.timestamps else (), as_of_s=as_of, official=official)
 
-    # 盘中同长度区间（重叠窗口，v1 口径；v2 改为不重叠窗口）
-    horizon_stats = {}
-    for h in HORIZONS_H:
-        diffs = []
-        for day, stamps in by_day.items():
-            for t in stamps:
-                t2 = t + h * 3600
-                if t2 in basis and datetime.fromtimestamp(t2, NY).date().isoformat() == day:
-                    diffs.append(abs(basis[t2] - basis[t]))
-        if diffs:
-            diffs.sort()
-            horizon_stats[f"{h}h"] = {"n": len(diffs), "median": round(statistics.median(diffs), 1),
-                                      "p95": round(diffs[int(0.95 * len(diffs))], 1), "max": round(max(diffs), 1)}
 
-    drifts = sorted(abs(o["drift_bp"]) for o in overnight)
-    closes = [e.close for e in cross.endpoints if e.close is not None]
-    out = {
-        "nature": "EXPLORATORY_US_CASH_SESSION_BASIS_CHANGE (Yahoo 5 分钟配对；与生产源不同供应商)",
-        "generated_utc": datetime.now(UTC).isoformat(timespec="seconds"), "contract": contract,
-        "paired_points": len(paired), "sessions": len(days), "from": days[0] if days else None,
-        "to": days[-1] if days else None,
-        "caveat": "美股时段端点样本，不约束区间内部，不是亚洲决策时点误差的包络或界限；亚洲时点误差未识别",
-        "overnight_drift": overnight,
-        "overnight_abs_drift_bp": {"n": len(drifts),
-                                   "median": round(statistics.median(drifts), 1) if drifts else None,
-                                   "p95": round(drifts[int(0.95 * len(drifts))], 1) if drifts else None,
-                                   "max": round(max(drifts), 1) if drifts else None},
-        "intraday_abs_drift_bp_by_horizon": horizon_stats,
-        "pairing_rule": cross.rule, "cross_session_status": cross.status,
-        "last_close_basis_bp": closes[-1].basis * 1e4 if closes else None,
-    }
+def main(contract: str) -> None:
+    msgs = asyncio.run(fetch(contract))
+    fut_msg, idx_msg = msgs[f"yahoo.chart.{contract}"], msgs["yahoo.chart.NDX"]
+    out = {"contract": contract, "generated_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+           "analysis": analysis_from_messages(fut_msg, idx_msg, CalendarProvider(REPO / "config" / "calendar_overrides.toml"))}
     path = REPO / "reports" / "mvp" / "evidence" / f"futures-basis-{fut_msg.run_id}.json"
     if path.exists():  # 不覆盖历史证据
         raise SystemExit(f"输出已存在，拒绝覆盖：{path}")
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"{contract} × NDX 配对 {len(paired)} 点，{len(days)} 个交易日（{out['from']}→{out['to']}）")
-    print(f"跨会话端点变化（{cross.rule}，{len(overnight)} 个，状态 {cross.status}）：",
-          json.dumps(out["overnight_abs_drift_bp"], ensure_ascii=False))
-    for o in overnight[-5:]:
-        print(f"  {o['from']} 收盘 {o['close_basis_bp']:.1f}bp → {o['to']} 首根线 {o['open_basis_bp']:.1f}bp"
-              f"（{o['drift_bp']:+.1f}bp，{o['hours']:.1f} 小时，{o['gap']}）")
-    print("盘中同长度区间漂移：", json.dumps(horizon_stats, ensure_ascii=False))
+    a = out["analysis"]
+    print(f"跨会话（{a['cross_session']['rule']}）：{a['cross_session']['n']} 个，状态 {a['cross_session']['status']}")
+    print(f"亚洲决策时点误差：{a['asia_decision_error_status']}（界限 {a['asia_decision_error_bound_bp']}）")
     print(path)
 
 

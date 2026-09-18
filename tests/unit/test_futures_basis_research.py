@@ -16,19 +16,31 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from qdii.core.futures_basis_research import (
+    ANALYSIS_UNKNOWNS,
     OFFICIAL_RULE,
     PAIRING_RULE,
+    BasisObs,
     CashSession,
     ChartError,
+    CrossSession,
     GapKind,
     OfficialClose,
     PriceKind,
     Quality,
     RawSeries,
+    analyze,
+    block_bootstrap_ci,
     classify,
+    estimated_premium_given_error,
+    horizon_windows,
+    nearest_rank,
     pair_sessions,
     parse_chart,
+    resample_session_indices,
+    same_start_comparison,
+    summarize,
     verify_official_closes,
+    within_session_acf,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -341,3 +353,148 @@ def test_tool_sessions_are_none_when_the_calendar_is_uncertain(tmp_path):
 def test_single_day_offset_helper_is_sane():
     assert ny("2026-09-17", "16:00") - ny("2026-09-17", "15:55") == 300
     assert timedelta(seconds=ny("2026-09-17", "09:35") - ny("2026-09-16", "16:00")) == timedelta(hours=17, minutes=35)
+
+
+# ================= 任务 3：统计只回答可观测问题 =================
+
+def test_nearest_rank_positions_are_exact():
+    xs = [float(v) for v in range(1, 22)]  # 21 个样本
+    q = nearest_rank(xs, 0.95)
+    assert q == {"method": "NEAREST_RANK", "p": 0.95, "n": 21, "rank": 20, "index": 19, "value": 20.0}
+    assert nearest_rank([5.0, 1.0, 3.0, 2.0], 0.5)["value"] == 2.0  # ceil(0.5×4)=2
+    assert nearest_rank(list(map(float, range(1, 21))), 0.95)["rank"] == 19  # p·n 为整数时不取下一位
+    assert nearest_rank([], 0.95)["value"] is None
+
+
+def test_summary_is_computed_before_any_rounding():
+    s = summarize([0.04, -0.04, 0.04])  # 如先舍入到 0.1 会全部变 0
+    assert s["signed_mean"] == pytest.approx(0.04 / 3) and s["abs_max"] == 0.04
+    assert s["signed_variance"] == pytest.approx(((0.04 - 0.04 / 3) ** 2 * 2 + (0.04 + 0.04 / 3) ** 2) / 2)
+    assert summarize([])["n"] == 0 and summarize([])["abs_p95"]["value"] is None
+
+
+def test_direction_example_from_section_1():
+    """b(c)=0.01、b(t)=0.0095：基差收窄 5bp → 代理净值相对偏低约 4.9505bp；真实溢价 10% 时估算溢价偏高约 5.4482bp。"""
+    start = BasisObs(0, 101.0, 100.0, PriceKind.BAR_5M, "a", "b")
+    end = BasisObs(3600, 100.95 * 1.02, 100.0 * 1.02, PriceKind.BAR_5M, "c", "d")
+    x = CrossSession(PAIRING_RULE, date(2026, 1, 1), date(2026, 1, 2), start, end, GapKind.NORMAL, (), False)
+    assert x.basis_drift == pytest.approx(-0.0005)
+    assert x.relative_return_error * 1e4 == pytest.approx(-4.9505, abs=5e-5)
+    assert x.relative_return_error == pytest.approx(x.basis_drift / (1 + start.basis))
+    assert x.return_difference == pytest.approx((end.index / start.index) * x.basis_drift / (1 + start.basis))
+    bias = estimated_premium_given_error(0.10, x.relative_return_error) - 0.10
+    assert bias * 1e4 == pytest.approx(5.4482, abs=5e-5)
+
+
+def windows_for(days, sessions, **kw):
+    f, i = synthetic(days, **kw)
+    ends = pair_sessions(classify(f, sessions, cash_index=False), classify(i, sessions, cash_index=True), sessions,
+                         as_of_s=FAR_FUTURE)
+    fut, idx = classify(f, sessions, cash_index=False), classify(i, sessions, cash_index=True)
+    return fut, idx, ends
+
+
+def test_windows_start_at_the_first_bar_close_and_do_not_overlap():
+    days = [("2026-09-14", "16:00")]
+    sessions = (session("2026-09-14"),)
+    fut, idx, _ = windows_for(days, sessions)
+    ws, excl = horizon_windows(fut, idx, sessions, hours=1, as_of_s=FAR_FUTURE)
+    assert [(_hm(w.start.time_s), _hm(w.end.time_s)) for w in ws] == [
+        ("09:35", "10:35"), ("10:35", "11:35"), ("11:35", "12:35"), ("12:35", "13:35"), ("13:35", "14:35"),
+        ("14:35", "15:35")]
+    assert excl == ()
+    assert [(_hm(w.start.time_s), _hm(w.end.time_s)) for w in horizon_windows(fut, idx, sessions, hours=6,
+                                                                              as_of_s=FAR_FUTURE)[0]] == [
+        ("09:35", "15:35")]
+    early = (session("2026-11-27", close_hm="13:00"),)
+    fe, ie, _ = windows_for([("2026-11-27", "13:00")], early)
+    assert len(horizon_windows(fe, ie, early, hours=3, as_of_s=FAR_FUTURE)[0]) == 1
+    assert horizon_windows(fe, ie, early, hours=6, as_of_s=FAR_FUTURE)[0] == ()
+
+
+def test_window_with_any_missing_interior_bar_is_excluded_not_filled():
+    sessions = (session("2026-09-14"),)
+    fut, idx, _ = windows_for([("2026-09-14", "16:00")], sessions, drop=((IDX, "2026-09-14", "10:00"),))
+    ws, excl = horizon_windows(fut, idx, sessions, hours=1, as_of_s=FAR_FUTURE)
+    assert [_hm(w.start.time_s) for w in ws] == ["10:35", "11:35", "12:35", "13:35", "14:35"]  # 09:35—10:35 缺内部线
+    assert [(x.key, x.reason) for x in excl] == [("2026-09-14 open+5m/1h", "INTERIOR_BAR_MISSING")]
+
+
+def test_same_start_comparison_uses_one_set_of_complete_sessions():
+    days = [("2026-09-14", "16:00"), ("2026-09-15", "16:00")]
+    sessions = tuple(session(d) for d, _ in days)
+    fut, idx, _ = windows_for(days, sessions, drop=((FUT, "2026-09-15", "14:00"),))  # 09-15 的 6 小时窗口不完整
+    cmp = same_start_comparison(fut, idx, sessions, hours=(1, 2, 3, 6), as_of_s=FAR_FUTURE)
+    assert cmp["sessions"] == ["2026-09-14"]
+    assert all(v["n"] == 1 for v in cmp["by_horizon"].values())
+
+
+def test_endpoint_statistics_never_produce_an_asia_bound():
+    """反例：两个端点只差 5bp，区间中途偏离 20bp。端点统计再小也不能给出亚洲界限。"""
+    def bp(day, k):
+        if day == "2026-09-15":
+            return 105.0
+        return 120.0 if 30 <= k <= 40 else 100.0
+
+    days = [("2026-09-14", "16:00"), ("2026-09-15", "16:00")]
+    sessions = tuple(session(d) for d, _ in days)
+    f, i = synthetic(days, basis_bp=bp)
+    out = analyze(f, i, sessions, as_of_s=FAR_FUTURE)
+    assert out["asia_decision_error_status"] == "UNIDENTIFIED"
+    assert out["asia_decision_error_bound_bp"] is None and out["decision_grade"] is False
+    assert out["cross_session"]["values_bp"]["basis_drift"] == [pytest.approx(5.0, abs=1e-6)]
+    interior = out["intraday"]["by_horizon"]["1h"]["summary"]["abs_max"]
+    assert interior == pytest.approx(20.0, abs=1e-6)  # 端点 5bp 不约束区间内部的 20bp 偏离
+
+
+def test_unknown_status_is_fixed_whatever_the_sample_size():
+    days = [(d.isoformat(), "16:00") for d in (date(2026, 3, 2) + timedelta(days=k) for k in range(60))
+            if d.weekday() < 5]
+    sessions = tuple(session(d) for d, _ in days)
+    f, i = synthetic(days)
+    out = analyze(f, i, sessions, as_of_s=FAR_FUTURE, bootstrap_reps=50)
+    assert {k: out[k] for k in ANALYSIS_UNKNOWNS} == {
+        "asia_decision_error_status": "UNIDENTIFIED", "asia_decision_error_bound_bp": None, "decision_grade": False}
+    assert out["cross_session"]["summary"]["abs_p95"]["value"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_cross_session_is_stratified_by_gap_kind_with_elapsed_hours():
+    days = [("2026-09-03", "16:00"), ("2026-09-04", "16:00"), ("2026-09-08", "16:00"), ("2026-09-09", "16:00")]
+    sessions = tuple(session(d) for d, _ in days)
+    f, i = synthetic(days)
+    out = analyze(f, i, sessions, as_of_s=FAR_FUTURE)
+    strata = out["cross_session"]["by_gap"]
+    assert strata["NORMAL"]["n"] == 2 and strata["HOLIDAY_EXTENDED"]["n"] == 1 and strata["WEEKEND"]["n"] == 0
+    hol = next(s for s in out["cross_session"]["samples"] if s["gap"] == "HOLIDAY_EXTENDED")
+    assert hol["non_session_weekdays"] == ["2026-09-07"] and hol["elapsed_hours"] == pytest.approx(89 + 35 / 60)
+
+
+def test_resampling_is_reproducible_and_shared_across_horizons():
+    a = resample_session_indices(22, reps=5, seed=20260918)
+    assert a == resample_session_indices(22, reps=5, seed=20260918)
+    assert a != resample_session_indices(22, reps=5, seed=1)
+    assert all(len(r) == 22 and all(0 <= k < 22 for k in r) for r in a)
+
+
+def test_day_block_bootstrap_keeps_each_session_whole():
+    by_session = [[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]]
+    seen = []
+    ci = block_bootstrap_ci({"h": by_session}, lambda xs: seen.append(sorted(xs)) or sum(xs) / len(xs),
+                            reps=200, seed=7, min_sessions=2)
+    assert ci["h"]["status"] == "OK"
+    assert all(len(xs) == 6 and xs.count(1.0) in (0, 3, 6) for xs in seen)  # 日内样本整块进出
+
+
+def test_bootstrap_is_withheld_below_thirty_sessions():
+    ci = block_bootstrap_ci({"h": [[1.0]] * 29}, lambda xs: sum(xs), reps=10, seed=1)
+    assert ci["h"] == {"status": "INSUFFICIENT_SESSIONS", "sessions": 29, "ci": None}
+
+
+def test_acf_within_sessions_is_null_for_constant_or_short_input():
+    const = within_session_acf([[3.0] * 10, [3.0] * 10], lags=(1,))
+    assert const[0]["acf"] is None and const[0]["pairs"] == 18 and const[0]["sessions"] == 2
+    assert within_session_acf([[1.0]], lags=(1,))[0]["acf"] is None
+    alt = within_session_acf([[1.0, -1.0] * 5], lags=(1,))
+    assert alt[0]["acf"] == pytest.approx(-0.9) and alt[0]["input"] == "BASIS_LEVEL_MINUS_SESSION_MEAN"
+    split = within_session_acf([[1.0, 2.0], [3.0, 4.0]], lags=(1,))
+    assert split[0]["pairs"] == 2  # 不跨会话拼接
