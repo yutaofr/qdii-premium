@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from qdii.apps.relative_snapshot import pair_text
+from qdii.apps.relative_snapshot import DECISION_NOTICE, RELATIVE_NOTICE, pair_text
 from qdii.io import host
 
 log = logging.getLogger(__name__)
@@ -58,7 +58,9 @@ def _fmt(utc_ns: int | None) -> str:
 
 MODE_CN = {"CURRENT": "当前比较（连续交易，按卖一价，买入口径）", "CLOSING_REFERENCE": "收盘/午间参考（按最新价/收盘价，不代表当前可交易）"}
 PAIR_CN = {"ROBUST_DIFFERENCE": "超出情景边界", "UNRESOLVED": "未能区分", "MODEL_REFERENCE": "仅模型参考"}
-ENAV_CN = {"PROXY_ANCHOR": "盘中代理估算（结算日未验证）", "REFERENCE": "收盘参考估算（非当前）"}
+ENAV_CN = {"PROXY_ANCHOR": "盘中代理估算（结算日未验证，误差未验证）", "REFERENCE": "收盘参考估算（非当前）"}
+DECISION_CN = {"UNVALIDATED_ERROR": "误差未验证，不能确认是否满足买入条件", "REFERENCE_ONLY": "只有历史参考估算",
+               "NO_ESTIMATE": "无估算"}
 FRESH_CN = {"CURRENT": "新", "RECENT": "较新", "AGING": "变旧", "STALE": "过期", "UNKNOWN": "未知", "NOT_APPLICABLE": "—"}
 
 
@@ -121,14 +123,20 @@ def render_relative(rel: dict[str, Any] | None) -> str:
                  "内存中保留最近展示的输入包，采集器重启或被较新页面挤出后链接失效），"
                  "或用 <code>qdii relative --save</code> 另存一个新的决策快照。最近持久化快照："
                  f"{e(str(rel.get('last_persisted_bundle_id') or '无'))}")
+    decision = rel.get("absolute_decision_status", "NO_ESTIMATE")
+    bound = rel.get("absolute_error_bound_bp")
+    decision_txt = (f"绝对买入判断：<b>{e(DECISION_CN.get(decision, decision))}</b>（{e(decision)}；"
+                    f"有估算 {rel.get('estimate_available_count', 0)}/{rel.get('member_count', 0)} 只；"
+                    f"误差界限 {'—' if bound is None else e(str(bound))}）。{e(DECISION_NOTICE)}")
     return f"""<h2>估算溢价与相对比较 · {e(MODE_CN.get(rel['mode'], rel['mode']))}</h2>
+<p class="notice">{decision_txt}</p>
 <p class="notice">{e(rel['scope_notice'])}</p>
 <p>知识截止 {_fmt(rel['cutoff_utc_ns'])}；快照 {_fmt(rel['tau_utc_ns'])}；比较状态 <b>{e(rel['status'])}</b>；
 参与比较成员锚点最旧 {rel['max_anchor_sessions']} 个交易日（{e(q['anchor_health'])}）；机会提醒 {'允许' if rel['opportunity_alert_allowed'] else '关闭'}</p>
 <div class="wrap"><table>
-<tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>估算溢价<br><span class='small'>昨结算代理锚点，结算日未验证</span></th><th>相对最便宜</th><th>与下一名</th>
+<tr><th>排名</th><th>基金</th><th>价格<br><span class='small'>卖一量</span></th><th>估算溢价<br><span class='small'>昨结算代理锚点，结算日与误差均未验证</span></th><th>相对最便宜</th><th>与下一名</th>
 <th>官方净值对照<br><span class='small'>最新价/已披露净值</span></th><th>净值日</th><th>新鲜度</th><th></th></tr>{''.join(rows)}</table></div>
-<p class="small">相对价差 = (价格/单位净值) 之比 − 1，不是绝对溢价百分点；"官方净值对照"用的是已披露的旧净值，不是估算净值。
+<p class="small">{e(RELATIVE_NOTICE)}相对价差 = (价格/单位净值) 之比 − 1，不是绝对溢价百分点；"官方净值对照"用的是已披露的旧净值，不是估算净值。
 模型 M0 满仓假设（{e(q['provenance_confidence'])}，{e(q['model_status'])}）；延迟 {e(q['delay_status'])}；原因 {e(reasons)}。</p>
 <p class="small">成对判断的"情景边界" = 日终历史差分 P95×√交易日数 + 报价错位情景（VM-11 波动假设）+ 净值舍入；
 未经盘中实测，"超出情景边界"只表示超出该声明边界，不是统计显著性。</p>

@@ -130,3 +130,25 @@ uv run python tools/futures_basis_intraday.py NQZ26 \
 21 个跨会话样本不变，是因为 v1 的问题不在这 21 对，而在最后一天的端点诊断和盘中窗口的读法。数值没变，
 不等于当时的结论成立：它们依旧只是美股端点样本，不是亚洲时点误差。
 另有一处观察：同一 Yahoo 响应的 `meta.previousClose` 也是 29743.0，与新浪昨结算相同。两家供应商字段一致，仍不等于官方结算确认。
+
+## 生产兼容 · 产品披露："有估算"不等于"通过决策验证"
+
+**接受。** `absolute_premium_available` 原本只表示"至少一只有 PROXY_ANCHOR 代理估算"，名字却容易被读成"绝对溢价可用于判断"。
+检索全部消费者：只有 `view()` 与三处测试断言使用它，没有任何买入判断依赖它；也没有已实现的买入阈值引擎，本次不新建。
+
+**修正（只改视图与导出信封，不改数值模型、排名、采集时刻与持久化结构）：**
+
+- 每只基金与组级视图都增加 `estimate_available`、`absolute_decision_eligible`、`absolute_decision_status`、
+  `absolute_error_bound_bp`、`decision_limitation_codes`。PROXY_ANCHOR → `UNVALIDATED_ERROR`（`ASIA_FUTURES_ERROR_UNIDENTIFIED`）；
+  REFERENCE → `REFERENCE_ONLY`；UNAVAILABLE → `NO_ESTIMATE`。第一阶段 `absolute_decision_eligible` 恒为 `false`，界限恒为 `null`。
+- 组级另报 `estimate_available_count / member_count`；组级 eligible 要求全部成员 eligible，"任一成员有估算"不会变成全组可判定。
+- 页面、命令行文本、`/relative.json` 与下载信封 `full_bundle()` 用同一函数生成；信封新增 `decision_disclosure`，
+  其中的 `bundle`、`snapshot` 与 bundle_id 不变（测试核对哈希）。
+- 用户文案："估算溢价可供参考；亚洲决策时点的期货代理误差尚未验证，当前不能据此确认是否满足买入条件。"
+  页面把这句放在估算数字之前；估算列标注"结算日与误差均未验证"；另注明相对排名与情景边界不能替代绝对估值验证。
+  页面和命令行都不出现"可买入"或由 5bp 推出的安全区间。
+- `absolute_premium_available` 保留为已弃用的兼容别名（代码注释、README、验收报告第 6 节均已说明）。
+
+**测试：** 新增 `tests/unit/test_enav_disclosure.py`（成员与组级字段、一只有估算时组级不可判定、REFERENCE、行情停更与冷启动、
+溢价取 −5%/0/9.99%/10%/10.01%/50% 都不解除未知、任意 enav 状态都没有 eligible 路径、四种出口状态一致、下载信封不改动 bundle 与 snapshot），
+并在 `tests/unit/test_enav.py` 原有三处别名断言旁补充新字段断言。用测试夹具渲染了一份合成状态页检查措辞，未运行或重启生产采集。

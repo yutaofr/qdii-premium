@@ -186,7 +186,8 @@ def test_cli_and_status_page_show_estimated_premium():
     text = render(snap, b, names)
     assert "估算溢价" in text and "昨结算 29152.25" in text
     rel = view(snap, b, names)
-    assert rel["absolute_premium_available"] is True
+    assert rel["absolute_premium_available"] is True  # 兼容别名：只表示存在代理估算
+    assert rel["estimate_available"] is True and rel["absolute_decision_eligible"] is False  # 复审：误差未验证
     page = render_html({"run_id": "t", "started_utc_ns": 0, "last_heartbeat_utc_ns": None, "warnings": [],
                         "window": {"active": True}, "host": None, "endpoints": [], "etf": {}, "parse_issues": {},
                         "events_recent": [], "relative": rel})
@@ -200,6 +201,7 @@ def test_closing_reference_viewed_after_us_close_keeps_the_close_before_the_snap
     snap = evaluate_bundle(b)
     assert {x.status for x in snap.enav} == {"REFERENCE"}  # 历史参考，不是当前可用的估算
     assert view(snap, b, {})["absolute_premium_available"] is False
+    assert view(snap, b, {})["absolute_decision_status"] == "REFERENCE_ONLY"
 
 
 def test_d1_stale_quotes_at_cutoff_make_current_estimate_unavailable():
@@ -210,6 +212,7 @@ def test_d1_stale_quotes_at_cutoff_make_current_estimate_unavailable():
     assert {x.status for x in snap.enav} == {"UNAVAILABLE"}
     assert all(ReasonCode.TIME_SKEW in x.reasons for x in snap.enav)
     assert view(snap, b, {})["absolute_premium_available"] is False
+    assert view(snap, b, {})["absolute_decision_status"] == "NO_ESTIMATE"
     uncovered = evaluate_bundle(replace(st.bundle(bj(14, 50)), calendar_covered=False))
     assert all(x.status == "UNAVAILABLE" and ReasonCode.CALENDAR_UNCERTAIN in x.reasons for x in uncovered.enav)
 

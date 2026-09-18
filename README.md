@@ -1,6 +1,6 @@
 # qdii-premium
 
-纳指100 QDII ETF 溢价监测。当前状态：研究预览。A 股交易时段提供**盘中代理估算溢价**（纳指期货实时价相对昨结算的涨跌 + 即期汇率推算估算净值；结算日未验证、无误差范围，见勘误 E8），收盘后显示收盘参考估算；另有五只之间的**相对比较**。打开或唤醒电脑即可使用，不需要夜间开机。
+纳指100 QDII ETF 溢价监测。当前状态：研究预览。A 股交易时段提供**盘中代理估算溢价**（纳指期货实时价相对昨结算的涨跌 + 即期汇率推算估算净值；结算日未验证、无误差范围，见勘误 E8；亚洲决策时点误差未验证，不能据此确认是否满足买入条件），收盘后显示收盘参考估算；另有五只之间的**相对比较**。打开或唤醒电脑即可使用，不需要夜间开机。
 
 - MVP 验收：[reports/mvp/acceptance.md](reports/mvp/acceptance.md)；评审与处理：[review](reports/mvp/review-2026-09-15.md)、[response](reports/mvp/review-2026-09-15-response.md)
 
@@ -36,11 +36,12 @@
 | `qdii.pipeline.host_windows` | A 股窗口 + 按日历计算的美股收盘窗口组合（收盘窗口已停用） |
 | `qdii.core.enav`、`qdii.contracts.sina_hf_v2`、`qdii.contracts.cfets_fx_spot_v1` | 盘中估算净值与估算溢价（ADR-036）：昨结算代理锚点、CFETS 即期汇率 |
 
-未实现：估算溢价的误差范围（需与官方净值对比积累）、价格机会通知、基金公告监控、SQLite 规范化存储。
+未实现：估算溢价的误差范围（亚洲决策时点需独立参照，见 [验证协议](reports/phase0/futures/asian-decision-validation-protocol.md)）、价格机会通知、基金公告监控、SQLite 规范化存储。
 
 ## 使用
 
 - 首屏（本机）：`http://127.0.0.1:8787/`，数据接口 `/relative.json`（视图）、`/relative/bundle/<bundle_id>.json`（页面所示的完整输入包，按 id 取回）、`/health.json`
+- 决策披露（2026-09-18 期货基差复审）：`estimate_available`（有当前代理估算）与 `absolute_decision_eligible`（通过绝对决策验证）是两个独立字段。亚洲决策时点的期货代理误差尚未验证，后者当前恒为 `false`，状态 `UNVALIDATED_ERROR`，`absolute_error_bound_bp` 为 `null`；视图、命令行、下载信封（`decision_disclosure`）一致。`absolute_premium_available` 是已弃用的兼容别名，只表示存在代理估算
 - 命令行：`uv run qdii relative`（当前）；`uv run qdii relative --at 2026-09-15T14:50:00+08:00`（任意历史时刻）
 
 ## Phase 0 证据

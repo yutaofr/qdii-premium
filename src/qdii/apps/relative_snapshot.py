@@ -91,6 +91,8 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
                            "reasons": [r.value for r in p.reasons]}
     mq = {m.code: m for m in q.members}
     enav = {x.code: x for x in snap.enav}
+    decision = decision_block(snap)
+    members = decision["members"]
     rows = []
     for m in g.members:
         s = specs[m.code]
@@ -104,6 +106,7 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
             "snapshot_msg_id": s.snapshot_msg_id, "nav_msg_id": s.nav_msg_id,
             "anchor_sessions": m.anchor_sessions, "anchor_health": m.anchor_health,
             "index_date": s.index_date, "fx_date": s.fx_date,
+            **members[m.code],
             "enav": None if x is None else {
                 "status": x.status, "value": x.enav, "premium": x.premium, "index_move": x.index_move,
                 "futures_move": x.futures_move, "fx_move": x.fx_move, "basis": x.basis,
@@ -122,7 +125,10 @@ def view(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]) 
         "calendar_covered": bundle.calendar_covered,
         "us_close_date": bundle.us_close_date, "us_close_index": bundle.us_close_index,
         "futures_contract": bundle.futures_contract, "roll_window": bundle.roll_window,
-        "absolute_premium_available": any(x.status == "PROXY_ANCHOR" for x in snap.enav),
+        **decision["group"],
+        # 已弃用的兼容别名：只表示至少一只有 PROXY_ANCHOR 代理估算，不表示通过绝对买入判断验证。
+        # 新消费者读 estimate_available 与 absolute_decision_eligible 两个独立字段。
+        "absolute_premium_available": decision["group"]["estimate_available"],
         "scope_notice": ENAV_NOTICE,
     }
 
@@ -133,10 +139,47 @@ ENAV_NOTICE = ("估算溢价 = 价格 / 估算净值 − 1；估算净值用昨�
                "相对排名只回答五只中谁更便宜，即使全部都很贵也会有第一名。")
 
 
+# 2026-09-18 期货基差复审：亚洲决策时点的期货代理误差未识别，"有估算"与"通过绝对决策验证"分开披露。
+# 第一阶段没有 absolute_decision_eligible = true 的路径；数值模型、排名与持久化结构不变。
+DECISION_NOTICE = "估算溢价可供参考；亚洲决策时点的期货代理误差尚未验证，当前不能据此确认是否满足买入条件。"
+RELATIVE_NOTICE = "相对排名与差分情景边界照常计算，但只比较五只之间的相对高低，不能替代绝对估值验证。"
+DECISION_STATUS = {"PROXY_ANCHOR": "UNVALIDATED_ERROR", "REFERENCE": "REFERENCE_ONLY"}
+DECISION_CODES = {"PROXY_ANCHOR": ("ASIA_FUTURES_ERROR_UNIDENTIFIED",),
+                  "REFERENCE": ("REFERENCE_NOT_CURRENT", "ASIA_FUTURES_ERROR_UNIDENTIFIED")}
+
+
+def decision_disclosure(enav_status: str | None) -> dict[str, Any]:
+    """单只基金：PROXY_ANCHOR = 当前代理估算可用但误差未验证；REFERENCE = 历史参考；其余 = 无估算。"""
+    return {"estimate_available": enav_status == "PROXY_ANCHOR",
+            "absolute_decision_eligible": False,
+            "absolute_decision_status": DECISION_STATUS.get(enav_status or "", "NO_ESTIMATE"),
+            "absolute_error_bound_bp": None,
+            "decision_limitation_codes": list(DECISION_CODES.get(enav_status or "", ("ESTIMATE_UNAVAILABLE",)))}
+
+
+def decision_block(snap: RelativeSnapshot) -> dict[str, Any]:
+    """成员与组级披露。组级不把"任一成员有估算"当成全组可判定：eligible 要求全部成员 eligible。"""
+    enav = {x.code: x.status for x in snap.enav}
+    members = {m.code: decision_disclosure(enav.get(m.code)) for m in snap.result.members}
+    ds = list(members.values())
+    statuses = {d["absolute_decision_status"] for d in ds}
+    codes = list(dict.fromkeys(c for d in ds for c in d["decision_limitation_codes"]))
+    group = {"estimate_available": any(d["estimate_available"] for d in ds),
+             "estimate_available_count": sum(d["estimate_available"] for d in ds),
+             "member_count": len(ds),
+             "absolute_decision_eligible": bool(ds) and all(d["absolute_decision_eligible"] for d in ds),
+             "absolute_decision_status": next((st for st in ("UNVALIDATED_ERROR", "REFERENCE_ONLY") if st in statuses),
+                                              "NO_ESTIMATE"),
+             "absolute_error_bound_bp": None,
+             "decision_limitation_codes": codes,
+             "decision_notice": DECISION_NOTICE, "relative_notice": RELATIVE_NOTICE}
+    return {"group": group, "members": members}
+
+
 def full_bundle(snap: RelativeSnapshot, bundle: RelativeBundle) -> dict[str, Any]:
-    """完整可复算材料（评审口径 2）：规范输入包 + 结果 + 质量。"""
+    """完整可复算材料（评审口径 2）：规范输入包 + 结果 + 质量。决策披露放在信封里，不改动 bundle 与 snapshot。"""
     return {"bundle_id": snap.bundle_id, "bundle": json.loads(canonical_json(bundle)),
-            "snapshot": snapshot_to_dict(snap)}
+            "snapshot": snapshot_to_dict(snap), "decision_disclosure": decision_block(snap)}
 
 
 def pair_text(p: dict[str, Any]) -> str:
@@ -195,6 +238,9 @@ def render(snap: RelativeSnapshot, bundle: RelativeBundle, names: dict[str, str]
             lines.append(f"  {code} vs {p['next']}: δ={p['delta'] * 100:+.3f}%  {pair_text(p)}")
     lines += [
         "",
+        (f"绝对买入判断：{v['absolute_decision_status']}（有估算 {v['estimate_available_count']}/{v['member_count']} 只；"
+         f"误差界限 {'—' if v['absolute_error_bound_bp'] is None else v['absolute_error_bound_bp']}）。{DECISION_NOTICE}"),
+        RELATIVE_NOTICE,
         v["scope_notice"],
         (f"质量：来源可信度 {q['provenance_confidence']}；延迟 {q['delay_status']}；模型 {q['model_status']}；"
          f"对齐 {q['alignment']}；原因 {','.join(v['reasons']) or '无'}。"),
