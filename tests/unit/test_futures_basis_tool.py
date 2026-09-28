@@ -327,6 +327,37 @@ def test_invalid_official_source_is_excluded_with_reason(tool, tmp_path, change,
     assert all(v["status"] != "VERIFIED" for v in checks)
 
 
+def _official_doc(tool, tmp_path, rows, symbol="NDX"):
+    payload = {"data": {"symbol": symbol, "tradesTable": {"rows": rows}}}
+    m = make_msg(json.dumps(payload).encode(), source_id="nasdaq", endpoint_id="nasdaq.ndx_history")
+    seg = tmp_path / "official/raw/nasdaq/2026-09-18"
+    seg.mkdir(parents=True)
+    raw_file(seg, [m])
+    out = tmp_path / "official.json"
+    assert cli(tool, raw_file(tmp_path, default_msgs()), out,
+               "--official-close-root", str(tmp_path / "official")) == 0
+    return m, json.loads(out.read_text())
+
+
+def test_row_parse_issues_stay_on_a_used_source_not_in_the_exclusions(tool, tmp_path):
+    m, doc = _official_doc(tool, tmp_path, [{"date": "09/17/2026", "close": "29,446.98"},
+                                           {"date": "bad", "close": "1"}])
+    oc = doc["inputs"]["official_closes"]
+    assert oc["excluded_responses"] == []
+    assert [r["msg_id"] for r in oc["responses"]] == [m.msg_id]
+    assert oc["responses"][0]["row_parse_issues"] == ["QUOTE_INVALID: date='bad'"]
+    assert {r["ref"] for r in oc["records"]} == {m.msg_id}
+
+
+def test_unparseable_official_response_is_excluded_and_cannot_verify(tool, tmp_path):
+    m, doc = _official_doc(tool, tmp_path, [{"date": "09/17/2026", "close": "29,446.98"}], symbol="SPX")
+    oc = doc["inputs"]["official_closes"]
+    assert oc["responses"] == [] and oc["records"] == []
+    assert [(e["msg_id"], e["reason"]) for e in oc["excluded_responses"]] == [(m.msg_id, "PARSE_ISSUES")]
+    checks = doc["analysis"]["official_close_diagnostic"]["verification"]
+    assert all(v["status"] != "VERIFIED" for v in checks)
+
+
 @pytest.mark.parametrize(("index", "symbol"), [(0, "NQU26.CME"), (0, "NQ=F"), (0, ""),
                                                (0, None), (1, "^GSPC"), (1, "")])
 def test_response_identity_must_match_request(tool, tmp_path, capsys, index, symbol):
