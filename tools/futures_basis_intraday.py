@@ -193,17 +193,21 @@ def load_official_closes(root: Path, first: date, last: date, *,
             if hashlib.sha256(m.body).hexdigest() != m.body_sha256:
                 raise SelectionError("HASH_MISMATCH", f"official close {m.msg_id} in {path}")
             parsed = index_history_v1.parse_nasdaq(m)
-            if parsed.issues:
-                excluded.append({**origin, "reason": "PARSE_ISSUES"})
+            issues = [f"{i.code.value}: {i.detail}" for i in parsed.issues]
+            if issues and not parsed.records:
+                excluded.append({**origin, "reason": "PARSE_ISSUES", "issues": issues})
+                continue
             selected = [rec for rec in parsed.records if rec.close is not None and first <= rec.trade_date <= last]
             if not selected:
                 continue
+            # 行级问题只丢弃那几行；报文仍被引用，所以记在来源条目上，不列入排除清单。
             responses[m.msg_id] = {
                 **origin, "source_id": m.source_id, "endpoint_id": m.endpoint_id,
                 "body_sha256": m.body_sha256, "body_sha256_verified": True,
                 "received_utc_ns": m.received_utc_ns,
                 "received_at_utc": datetime.fromtimestamp(m.received_utc_ns / 1e9, UTC).isoformat(),
                 "contract_version": index_history_v1.NASDAQ_VERSION,
+                **({"row_parse_issues": issues} if issues else {}),
             }
             for rec in selected:
                 values.setdefault(rec.trade_date, {}).setdefault(str(rec.close), m.msg_id)
