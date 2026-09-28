@@ -10,7 +10,7 @@ import gzip
 import importlib.util
 import json
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -298,7 +298,8 @@ def test_official_evidence_exports_verified_source_provenance(tool, tmp_path):
     sources = json.loads(out.read_text())["inputs"]["official_closes"]["responses"]
     assert len(sources) == 1
     source = sources[0]
-    assert source["msg_id"] == m.msg_id and source["raw_file"] == str(gz)
+    assert gz.is_file() and not path.exists()
+    assert source["msg_id"] == m.msg_id and source["raw_file"] == str(path)  # 逻辑段路径，不随压缩变化
     assert source["body_sha256"] == m.body_sha256 and source["body_sha256_verified"] is True
     assert source["received_utc_ns"] == m.received_utc_ns and source["received_at_utc"]
     assert source["contract_version"] == "nasdaq_index_historical_v1"
@@ -356,6 +357,46 @@ def test_unparseable_official_response_is_excluded_and_cannot_verify(tool, tmp_p
     assert [(e["msg_id"], e["reason"]) for e in oc["excluded_responses"]] == [(m.msg_id, "PARSE_ISSUES")]
     checks = doc["analysis"]["official_close_diagnostic"]["verification"]
     assert all(v["status"] != "VERIFIED" for v in checks)
+
+
+def _nasdaq(rows, *, received, seq=0):
+    payload = {"data": {"symbol": "NDX", "tradesTable": {"rows": rows}}}
+    return make_msg(json.dumps(payload).encode(), source_id="nasdaq", endpoint_id="nasdaq.ndx_history",
+                    received_utc_ns=received, seq=seq)
+
+
+def test_official_closes_stop_at_the_research_cutoff_as_the_log_grows(tool, tmp_path):
+    root = tmp_path / "official"
+    research = raw_file(tmp_path, default_msgs())
+    cutoff = min(m.received_utc_ns for m in default_msgs())
+    seg = root / "raw/nasdaq/2026-09-18"
+    seg.mkdir(parents=True)
+    before = _nasdaq([{"date": "09/17/2026", "close": "29,446.98"}], received=cutoff - 3600 * 10**9)
+    early = raw_file(seg, [before], name="05.jsonl")
+
+    def official(out):
+        assert cli(tool, research, out, "--official-close-root", str(root)) == 0
+        doc = json.loads(out.read_text())
+        return doc["inputs"]["official_closes"], doc["analysis"]["official_close_diagnostic"]
+
+    first, diag = official(tmp_path / "first.json")
+    assert first["knowledge_cutoff_utc_ns"] == cutoff
+    assert [r["msg_id"] for r in first["responses"]] == [before.msg_id]
+
+    # 截止之后：同一小时段内的晚到报文、次日收盘、超时响应、以及一条损坏的报文
+    same_hour = _nasdaq([{"date": "09/17/2026", "close": "29,000.00"}], received=cutoff + 1)
+    raw_file(seg, [same_hour], name=datetime.fromtimestamp(cutoff / 1e9, UTC).strftime("%H.jsonl"))
+    later = root / "raw/nasdaq/2026-09-21"
+    later.mkdir(parents=True)
+    t = int(datetime(2026, 9, 21, 5, 30, tzinfo=UTC).timestamp() * 1e9)
+    raw_file(later, [_nasdaq([{"date": "09/18/2026", "close": "29,500.00"}], received=t),
+                     replace(_nasdaq([], received=t + 10**9, seq=1), status=None, error="timeout"),
+                     replace(_nasdaq([], received=t + 2 * 10**9, seq=2), body_sha256="0" * 64)],
+             name="05.jsonl")
+    rawlog.compress_segment(early)
+
+    second, diag2 = official(tmp_path / "second.json")
+    assert second == first and diag2 == diag
 
 
 @pytest.mark.parametrize(("index", "symbol"), [(0, "NQU26.CME"), (0, "NQ=F"), (0, ""),

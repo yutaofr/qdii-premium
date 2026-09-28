@@ -60,7 +60,7 @@ DATA = Path.home() / "qdii-data"
 NY = ZoneInfo("America/New_York")
 UA = "qdii-premium-research/0.1 (personal research)"
 MARKET = "NASDAQ"  # 覆盖文件映射到 XNYS，与生产取美股交易日同一入口
-SCHEMA_VERSION = "futures-basis-evidence-3"
+SCHEMA_VERSION = "futures-basis-evidence-4"
 PAUSE_S = 1.0
 
 
@@ -177,13 +177,24 @@ async def fetch(contract: str, research_root: Path) -> tuple[str, list[Path]]:
 
 
 def load_official_closes(root: Path, first: date, last: date, *,
+                         cutoff_ns: int | None = None,
                          evidence: dict | None = None) -> tuple[dict[date, OfficialClose], list[dict]]:
-    """验证官方参照原始响应；冲突日期排除，损坏报文拒绝。evidence 收集可追溯来源与排除原因。"""
+    """验证官方参照原始响应；冲突日期排除，损坏报文拒绝。evidence 收集可追溯来源与排除原因。
+
+    cutoff_ns 是知识截止：只读接收时刻不晚于它的报文，数据目录之后继续增长也不改变结果。
+    raw_file 记逻辑段路径（.jsonl），轮转压缩为 .jsonl.gz 不改变记录。"""
     values: dict[date, dict[str, str]] = {}
     responses, excluded = {}, []
+    cutoff_segment = (None if cutoff_ns is None
+                      else datetime.fromtimestamp(cutoff_ns / 1e9, UTC).strftime("%Y-%m-%d/%H"))
     for path in rawlog.segments(root, sources=["nasdaq"]):
+        if cutoff_segment is not None and f"{path.parts[-2]}/{path.name.split('.')[0]}" > cutoff_segment:
+            continue  # 段按接收时刻的 UTC 日期/小时命名，整段晚于截止
+        logical = path.with_suffix("") if path.suffix == ".gz" else path
         for m in read_raw([path]):
-            origin = {"msg_id": m.msg_id, "raw_file": _home(path)}
+            if cutoff_ns is not None and m.received_utc_ns > cutoff_ns:
+                continue
+            origin = {"msg_id": m.msg_id, "raw_file": _home(logical)}
             if m.source_id != "nasdaq" or m.endpoint_id != "nasdaq.ndx_history":
                 excluded.append({**origin, "reason": "UNEXPECTED_SOURCE"})
                 continue
@@ -328,6 +339,7 @@ def build_document(contract: str, mode: str, run_id: str, paths: Sequence[Path],
             raise SelectionError("INSTRUMENT_MISMATCH",
                                  f"{raw.source_ref}: expected {expected}, received {raw.instrument!r}")
     as_of = min(fut_raw.received_s, idx_raw.received_s)
+    cutoff_ns = min(fm.received_utc_ns, im.received_utc_ns)  # 与 as_of 同一时刻，整数避免浮点边界
     sessions: tuple[CashSession, ...] | None = ()
     first = last = None
     if idx_raw.timestamps:
@@ -338,7 +350,7 @@ def build_document(contract: str, mode: str, run_id: str, paths: Sequence[Path],
     official_evidence: dict = {"responses": [], "excluded_responses": []}
     if official_root is not None and first is not None:
         official, conflicts = load_official_closes(official_root, first, last,  # type: ignore[arg-type]
-                                                   evidence=official_evidence)
+                                                   cutoff_ns=cutoff_ns, evidence=official_evidence)
     analysis = analyze(fut_raw, idx_raw, sessions, as_of_s=as_of, official=official)
     idx_recs, _ = verify_official_closes(classify(idx_raw, sessions, cash_index=True), sessions, official)
     comparison = None
@@ -364,6 +376,9 @@ def build_document(contract: str, mode: str, run_id: str, paths: Sequence[Path],
                          "non_session_weekdays": {d.isoformat(): n for d, n in sorted(names.items())}},
             "official_closes": None if official_root is None else {
                 "root": _home(official_root), "source": "Nasdaq 官方 NDX 历史（生产原始日志，index_history_v1）",
+                "knowledge_cutoff_utc_ns": cutoff_ns,
+                "knowledge_cutoff_utc": datetime.fromtimestamp(cutoff_ns / 1e9, UTC).isoformat(),
+                "cutoff_rule": "只用接收时刻不晚于研究响应（期货与指数两条中较早者）的官方报文；之后新增的日志不参与",
                 "records": [{"date": d.isoformat(), "value": o.value, "ref": o.source_ref}
                             for d, o in sorted(official.items())],
                 "conflicts": conflicts, **official_evidence},
